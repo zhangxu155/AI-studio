@@ -116,9 +116,7 @@ export default function App() {
       const caseItem = cases.find(c => c.id === id);
       if (!caseItem) throw new Error("Case not found");
 
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
-
-      // A. Generate Commentary & Scores
+      // A. Generate Commentary & Scores (Using Backend Proxy for Local/Qwen support)
       const prompt = `
         你是一位专业评委，正在参加「研发总院智能体大赛」。
         当前赛事阶段：${config.stage === 'final' ? '决赛' : '复赛'}。
@@ -135,75 +133,87 @@ export default function App() {
         {
           "pure_comment": "结构化文字点评",
           "voice_comment": "适合语音播报的简洁版点评（60-90秒语速）",
-          ${config.stage === 'final' ? `"scores": { "technical_innovation": 8.5, ... }, "total_score": 8.8, "score_reason": "打分依据"` : ''}
+          ${config.stage === 'final' ? `"scores": { "technical_innovation": 8.5, "business_value": 8.0, "technical_difficulty": 8.2, "presentation": 9.0 }, "total_score": 8.5, "score_reason": "打分依据"` : ''}
         }
       `;
 
-      const aiResponse = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
-        contents: [{ parts: [{ text: prompt }] }],
-        config: { responseMimeType: "application/json" }
+      const llmRes = await fetch('/api/llm-process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt })
       });
-
-      let text = aiResponse.text || "{}";
-      // 清洗 Markdown 标签，防止解析失败
+      
+      if (!llmRes.ok) throw new Error("LLM Processing failed");
+      const llmResult = await llmRes.json();
+      let text = llmResult.text || "{}";
+      
+      // Clean Markdown
       text = text.replace(/```json/g, "").replace(/```/g, "").trim();
-      console.log("AI Raw Response:", text);
       const result = JSON.parse(text);
 
-      // B. Generate TTS
-      const ttsModel = "gemini-2.5-flash-preview-tts";
-      
-      // Commentary Audio
-      const commentaryText = config.voice_templates.commentary
-        .replace("{team_name}", caseItem.team_name)
-        .replace("{case_name}", caseItem.case_name)
-        .replace("{content}", result.voice_comment);
-
-      const commentaryAudioResponse = await ai.models.generateContent({
-        model: ttsModel,
-        contents: [{ parts: [{ text: `请用中性专业女声播报：${commentaryText}` }] }],
-        config: {
-          responseModalities: [Modality.AUDIO],
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
-        }
-      });
-
-      const commentaryBase64Raw = commentaryAudioResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      // B. Generate TTS (Optional/Best effort for local deployment)
       let audio_comment = "";
-      if (commentaryBase64Raw) {
-        const commentaryBase64 = await addWavHeaderAndGetBase64(commentaryBase64Raw);
-        const res = await fetch('/api/save-audio', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filename: `${id}_comment.wav`, data: commentaryBase64 })
-        });
-        const data = await res.json();
-        audio_comment = data.url;
-      }
-
-      // Score Audio (Final only)
       let audio_score = "";
-      if (config.stage === 'final' && result.total_score) {
-        const scoreText = config.voice_templates.score.replace("{total_score}", result.total_score);
-        const scoreAudioResponse = await ai.models.generateContent({
-          model: ttsModel,
-          contents: [{ parts: [{ text: `请用中性专业女声播报：${scoreText}` }] }],
-          config: {
-            responseModalities: [Modality.AUDIO],
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
-          }
-        });
-        const scoreBase64Raw = scoreAudioResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-        if (scoreBase64Raw) {
-          const scoreBase64 = await addWavHeaderAndGetBase64(scoreBase64Raw);
-          const res = await fetch('/api/save-audio', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filename: `${id}_score.wav`, data: scoreBase64 })
+      
+      // Only attempt Gemini TTS if an API key is present (implies internet/cloud)
+      if (process.env.GEMINI_API_KEY) {
+        try {
+          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+          const ttsModel = "gemini-2.5-flash-preview-tts";
+          
+          // Commentary Audio
+          const commentaryText = config.voice_templates.commentary
+            .replace("{team_name}", caseItem.team_name)
+            .replace("{case_name}", caseItem.case_name)
+            .replace("{content}", result.voice_comment);
+
+          const commentaryAudioResponse = await ai.models.generateContent({
+            model: ttsModel,
+            contents: [{ parts: [{ text: `请用中性专业女声播报：${commentaryText}` }] }],
+            config: {
+              responseModalities: [Modality.AUDIO],
+              speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
+            }
           });
-          const data = await res.json();
-          audio_score = data.url;
+
+          const commentaryBase64Raw = commentaryAudioResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+          if (commentaryBase64Raw) {
+            const commentaryBase64 = await addWavHeaderAndGetBase64(commentaryBase64Raw);
+            const res = await fetch('/api/save-audio', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ filename: `${id}_comment.wav`, data: commentaryBase64 })
+            });
+            const data = await res.json();
+            audio_comment = data.url;
+          }
+
+          // Score Audio (Final only)
+          if (config.stage === 'final' && result.total_score) {
+            const scoreText = config.voice_templates.score.replace("{total_score}", result.total_score);
+            const scoreAudioResponse = await ai.models.generateContent({
+              model: ttsModel,
+              contents: [{ parts: [{ text: `请用中性专业女声播报：${scoreText}` }] }],
+              config: {
+                responseModalities: [Modality.AUDIO],
+                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
+              }
+            });
+            const scoreBase64Raw = scoreAudioResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+            if (scoreBase64Raw) {
+              const scoreBase64 = await addWavHeaderAndGetBase64(scoreBase64Raw);
+              const res = await fetch('/api/save-audio', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: `${id}_score.wav`, data: scoreBase64 })
+              });
+              const data = await res.json();
+              audio_score = data.url;
+            }
+          }
+        } catch (ttsError) {
+          console.warn("TTS Generation failed (likely offline):", ttsError);
+          // Continue without audio
         }
       }
 
@@ -519,8 +529,84 @@ const ConfigTab = ({ config, onUpdate }: any) => {
     onUpdate();
   };
 
+  const handleUpdateAISettings = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    const ai_settings = {
+      provider: formData.get('provider'),
+      api_key: formData.get('api_key'),
+      base_url: formData.get('base_url'),
+      model: formData.get('model'),
+    };
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...config, ai_settings })
+    });
+    alert('AI 配置已更新');
+    onUpdate();
+  };
+
+  const aiSettings = config.ai_settings || {
+    provider: 'openai',
+    api_key: '',
+    base_url: 'http://localhost:11434/v1',
+    model: 'qwen-plus'
+  };
+
   return (
     <div className="max-w-4xl mx-auto space-y-8">
+      <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-200">
+        <h3 className="text-xl font-bold mb-6">AI 模型配置 (本地部署/Qwen)</h3>
+        <form onSubmit={handleUpdateAISettings} className="space-y-6">
+          <div className="grid grid-cols-2 gap-6">
+            <div className="space-y-2">
+              <label className="text-sm font-bold text-slate-700">接口类型</label>
+              <select 
+                name="provider" 
+                defaultValue={aiSettings.provider}
+                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"
+              >
+                <option value="openai">OpenAI 兼容接口 (Qwen/Ollama/Local)</option>
+              </select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-bold text-slate-700">模型名称 (Model)</label>
+              <input 
+                name="model" 
+                defaultValue={aiSettings.model}
+                placeholder="如: qwen-plus 或 ollama-model"
+                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"
+              />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-bold text-slate-700">API 代理地址 (Base URL)</label>
+            <input 
+              name="base_url" 
+              defaultValue={aiSettings.base_url}
+              placeholder="http://localhost:11434/v1"
+              className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-bold text-slate-700">API Key</label>
+            <input 
+              name="api_key" 
+              type="password"
+              defaultValue={aiSettings.api_key}
+              placeholder="本地 Ollama 通常不需要 Key"
+              className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"
+            />
+          </div>
+          <div className="flex justify-end">
+            <button type="submit" className="px-6 py-2 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 transition-colors">
+              保存 AI 配置
+            </button>
+          </div>
+        </form>
+      </div>
+
       <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-200">
         <h3 className="text-xl font-bold mb-8">赛事阶段切换</h3>
         <div className="flex items-center justify-between p-6 bg-slate-50 rounded-2xl border border-slate-100">
