@@ -230,7 +230,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex font-sans">
+    <div className="h-screen bg-slate-50 flex font-sans overflow-hidden">
       {/* Sidebar */}
       <aside className="w-64 bg-white border-r border-slate-200 flex flex-col shadow-sm">
         <div className="p-8 border-bottom border-slate-100">
