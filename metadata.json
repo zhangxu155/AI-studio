@@ -1,0 +1,5 @@
+{
+  "name": "Copy of 智评 AI 评委系统",
+  "description": "适配研发总院智能体大赛的专业 AI 评委系统，支持复赛/决赛场景切换、专业语音点评与量化打分。",
+  "requestFramePermissions": []
+}

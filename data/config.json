@@ -1,0 +1,18 @@
+{
+  "stage": "semi-final",
+  "rules": {
+    "commentary_structure": "优点 + 待优化 + 建议",
+    "commentary_length": "300-400字",
+    "weights": {
+      "technical_innovation": 0.30,
+      "feasibility": 0.25,
+      "presentation": 0.20,
+      "documentation": 0.15,
+      "qa_response": 0.10
+    }
+  },
+  "voice_templates": {
+    "commentary": "各位好，我是AI评委。下面针对{team_name}团队的案例《{case_name}》进行点评：{content}",
+    "score": "该案例最终得分为：{total_score}分。"
+  }
+}
