@@ -1,14 +1,13 @@
 {
-  "stage": "semi-final",
+  "stage": "final",
   "rules": {
     "commentary_structure": "优点 + 待优化 + 建议",
     "commentary_length": "300-400字",
     "weights": {
-      "technical_innovation": 0.30,
-      "feasibility": 0.25,
-      "presentation": 0.20,
-      "documentation": 0.15,
-      "qa_response": 0.10
+      "work_demonstration": 0.35,
+      "technical_depth": 0.25,
+      "business_value": 0.2,
+      "defense_performance": 0.2
     }
   },
   "voice_templates": {

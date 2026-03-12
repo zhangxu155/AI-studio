@@ -3,7 +3,6 @@ import { createServer as createViteServer } from "vite";
 import fs from "fs/promises";
 import path from "path";
 import dotenv from "dotenv";
-import OpenAI from "openai";
 
 dotenv.config();
 
@@ -12,12 +11,6 @@ const PORT = 3000;
 
 const DATA_DIR = path.resolve("data");
 const AUDIO_DIR = path.resolve("public/audio");
-
-// Initialize OpenAI client for Qwen/Local API
-const openai = new OpenAI({
-  apiKey: process.env.LLM_API_KEY || "sk-no-key-required",
-  baseURL: process.env.LLM_API_BASE || "http://localhost:11434/v1", // Default to Ollama
-});
 
 app.use(express.json({ limit: '50mb' }));
 app.use('/audio', express.static(AUDIO_DIR));
@@ -67,35 +60,6 @@ app.post("/api/cases", async (req, res) => {
   cases.push(newCase);
   await writeJson("cases.json", cases);
   res.json(newCase);
-});
-
-// 3. LLM Process Proxy (For Local/Qwen deployment)
-app.post("/api/llm-process", async (req, res) => {
-  const { prompt } = req.body;
-  try {
-    const config = await readJson("config.json");
-    const aiSettings = config.ai_settings || {
-      provider: 'openai',
-      api_key: process.env.LLM_API_KEY || "sk-no-key-required",
-      base_url: process.env.LLM_API_BASE || "http://localhost:11434/v1",
-      model: process.env.LLM_MODEL || "qwen-plus"
-    };
-
-    const client = new OpenAI({
-      apiKey: aiSettings.api_key,
-      baseURL: aiSettings.base_url,
-    });
-
-    const response = await client.chat.completions.create({
-      model: aiSettings.model,
-      messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" }
-    });
-    res.json({ text: response.choices[0].message.content });
-  } catch (e: any) {
-    console.error("LLM Error:", e);
-    res.status(500).json({ error: e.message });
-  }
 });
 
 // 4. Save Process Result

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, Users, PlayCircle, FileText, Activity, ShieldAlert, CheckCircle2, Loader2, Volume2, Trophy, RefreshCw } from 'lucide-react';
+import { Settings, Users, PlayCircle, FileText, Activity, ShieldAlert, CheckCircle2, Loader2, Volume2, Trophy, RefreshCw, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -9,65 +9,6 @@ import { GoogleGenAI, Modality } from "@google/genai";
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
-}
-
-/**
- * 为 Gemini TTS 返回的原始 PCM 数据添加 WAV 文件头
- * Gemini TTS 默认输出: 24000Hz, 16-bit, Mono PCM
- */
-async function addWavHeaderAndGetBase64(base64Data: string, sampleRate: number = 24000): Promise<string> {
-  const binaryString = window.atob(base64Data);
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-
-  const wavHeader = new ArrayBuffer(44);
-  const view = new DataView(wavHeader);
-
-  // RIFF identifier "RIFF"
-  view.setUint32(0, 0x52494646, false);
-  // file length (36 + data_len)
-  view.setUint32(4, 36 + len, true);
-  // WAVE identifier "WAVE"
-  view.setUint32(8, 0x57415645, false);
-  // fmt chunk identifier "fmt "
-  view.setUint32(12, 0x666d7420, false);
-  // format chunk length
-  view.setUint32(16, 16, true);
-  // sample format (1 is PCM)
-  view.setUint16(20, 1, true);
-  // channel count (1 is Mono)
-  view.setUint16(22, 1, true);
-  // sample rate
-  view.setUint32(24, sampleRate, true);
-  // byte rate (sampleRate * blockAlign)
-  view.setUint32(28, sampleRate * 2, true);
-  // block align (channels * bits/8)
-  view.setUint16(32, 2, true);
-  // bits per sample
-  view.setUint16(34, 16, true);
-  // data chunk identifier "data"
-  view.setUint32(36, 0x64617461, false);
-  // data chunk length
-  view.setUint32(40, len, true);
-
-  const combined = new Uint8Array(44 + len);
-  combined.set(new Uint8Array(wavHeader), 0);
-  combined.set(bytes, 44);
-
-  // Use Blob and FileReader for robust base64 conversion
-  const blob = new Blob([combined], { type: 'audio/wav' });
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const base64 = (reader.result as string).split(',')[1];
-      resolve(base64);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
 }
 
 // --- Components ---
@@ -110,13 +51,41 @@ export default function App() {
     fetchData();
   }, []);
 
-  const handleProcess = async (id: string) => {
+  const getGenAI = () => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error("GEMINI_API_KEY is not configured.");
+    }
+    return new GoogleGenAI({ apiKey });
+  };
+
+  const callLLM = async (prompt: string) => {
+    try {
+      const ai = getGenAI();
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [{ parts: [{ text: prompt + "\n\n请直接输出 JSON 字符串，不要包含任何 Markdown 代码块格式。" }] }],
+      });
+      
+      if (response.text) {
+        // Remove potential markdown formatting if the model still includes it
+        const cleanedText = response.text.replace(/```json/g, "").replace(/```/g, "").trim();
+        return cleanedText;
+      }
+      throw new Error("模型返回内容为空");
+    } catch (error: any) {
+      console.error("Gemini API Error:", error);
+      throw new Error(`AI 服务调用失败: ${error.message || '未知错误'}`);
+    }
+  };
+
+  const handleProcess = async (id: string, demoPerf: string = "", defensePerf: string = "") => {
     setLoading(true);
     try {
       const caseItem = cases.find(c => c.id === id);
       if (!caseItem) throw new Error("Case not found");
 
-      // A. Generate Commentary & Scores (Using Backend Proxy for Local/Qwen support)
+      // A. Generate Commentary & Scores
       const prompt = `
         你是一位专业评委，正在参加「研发总院智能体大赛」。
         当前赛事阶段：${config.stage === 'final' ? '决赛' : '复赛'}。
@@ -124,97 +93,105 @@ export default function App() {
         案例信息：
         团队名称：${caseItem.team_name}
         案例名称：${caseItem.case_name}
-        核心内容：${caseItem.content}
+        核心方案内容：${caseItem.content}
+        
+        现场表现（外部输入信息）：
+        作品演示表现：${demoPerf || "（未提供演示表现，请主要基于方案内容评估）"}
+        现场答辩表现：${defensePerf || "（未提供答辩表现，请主要基于方案内容评估）"}
         
         点评规则：${config.rules.commentary_structure}，字数${config.rules.commentary_length}。
-        ${config.stage === 'final' ? `打分维度权重：${JSON.stringify(config.rules.weights)}。请为每个维度打分（0-10分）。` : ''}
         
+        评分标准（严格遵守）：
+        1. 作品演示 (满分35分):
+           - 35-26: 功能演示符合预期，运行稳定，无明显bug，操作便捷。
+           - 25-16: 演示符合预期，解决业务痛点，数据支撑充分。
+           - 15-6: 部分实现，基本稳定，少量bug，效果一般。
+           - 5-0: 未实现或不稳定，bug较多，无法正常演示。
+        2. 技术深度与合理性 (满分25分):
+           - 25-21: 架构合理，算法选型科学，过程规范，数据严谨，符合汽车研发安全合规。
+           - 20-16: 架构基本合理，算法适配需求，过程规范，基本合规。
+           - 15-11: 架构少量不合理，算法基本适配，数据处理不够严谨。
+           - 10-0: 架构混乱，选型不合理，不合规，有技术风险。
+        3. 业务落地价值 (满分20分):
+           - 20-16: 直接应用于汽车研发，显著提升效率/降本，解决长期痛点，高推广价值。
+           - 15-11: 应用于部分场景，有一定提升和推广潜力。
+           - 10-6: 结合不紧密，落地价值有限。
+           - 5-0: 无实际落地价值。
+        4. 现场答辩 (满分20分):
+           - 20-16: 逻辑清晰，表达流畅，准确阐述亮点/价值，回答准确全面，反应迅速。
+           - 15-11: 逻辑基本清晰，表达较流畅，能阐述核心，回答基本准确。
+           - 10-6: 逻辑/表达欠佳，阐述不完整，回答不够准确。
+           - 5-0: 混乱，无法阐述核心或回答基本提问。
+
         请输出JSON格式：
         {
           "pure_comment": "结构化文字点评",
           "voice_comment": "适合语音播报的简洁版点评（60-90秒语速）",
-          ${config.stage === 'final' ? `"scores": { "technical_innovation": 8.5, "business_value": 8.0, "technical_difficulty": 8.2, "presentation": 9.0 }, "total_score": 8.5, "score_reason": "打分依据"` : ''}
+          "scores": { 
+            "work_demonstration": 评分, 
+            "technical_depth": 评分, 
+            "business_value": 评分, 
+            "defense_performance": 评分 
+          }, 
+          "total_score": 总分, 
+          "score_reason": "打分依据（请结合现场表现和方案内容详细说明）"
         }
       `;
 
-      const llmRes = await fetch('/api/llm-process', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt })
-      });
-      
-      if (!llmRes.ok) throw new Error("LLM Processing failed");
-      const llmResult = await llmRes.json();
-      let text = llmResult.text || "{}";
+      const text = await callLLM(prompt);
       
       // Clean Markdown
-      text = text.replace(/```json/g, "").replace(/```/g, "").trim();
-      const result = JSON.parse(text);
+      const cleanedText = text.replace(/```json/g, "").replace(/```/g, "").trim();
+      const result = JSON.parse(cleanedText);
 
-      // B. Generate TTS (Optional/Best effort for local deployment)
+      // B. Generate TTS (Optional/Best effort)
       let audio_comment = "";
       let audio_score = "";
       
-      // Only attempt Gemini TTS if an API key is present (implies internet/cloud)
-      if (process.env.GEMINI_API_KEY) {
-        try {
-          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-          const ttsModel = "gemini-2.5-flash-preview-tts";
-          
-          // Commentary Audio
-          const commentaryText = config.voice_templates.commentary
-            .replace("{team_name}", caseItem.team_name)
-            .replace("{case_name}", caseItem.case_name)
-            .replace("{content}", result.voice_comment);
+      try {
+        const ai = getGenAI();
+        
+        // Commentary Audio
+        const commentaryText = config.voice_templates.commentary
+          .replace("{team_name}", caseItem.team_name)
+          .replace("{case_name}", caseItem.case_name)
+          .replace("{content}", result.voice_comment);
 
-          const commentaryAudioResponse = await ai.models.generateContent({
-            model: ttsModel,
-            contents: [{ parts: [{ text: `请用中性专业女声播报：${commentaryText}` }] }],
+        const commentaryRes = await ai.models.generateContent({
+          model: "gemini-2.5-flash-preview-tts",
+          contents: [{ parts: [{ text: `请用中性专业女声播报：${commentaryText}` }] }],
+          config: {
+            responseModalities: [Modality.AUDIO],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
+          }
+        });
+
+        const commentBase64 = commentaryRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        if (commentBase64) {
+          audio_comment = `data:audio/wav;base64,${commentBase64}`;
+        }
+
+        // Score Audio (Final only)
+        if (config.stage === 'final' && result.total_score) {
+          const scoreText = config.voice_templates.score.replace("{total_score}", result.total_score);
+
+          const scoreRes = await ai.models.generateContent({
+            model: "gemini-2.5-flash-preview-tts",
+            contents: [{ parts: [{ text: `请用中性专业女声播报：${scoreText}` }] }],
             config: {
               responseModalities: [Modality.AUDIO],
               speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
             }
           });
 
-          const commentaryBase64Raw = commentaryAudioResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-          if (commentaryBase64Raw) {
-            const commentaryBase64 = await addWavHeaderAndGetBase64(commentaryBase64Raw);
-            const res = await fetch('/api/save-audio', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ filename: `${id}_comment.wav`, data: commentaryBase64 })
-            });
-            const data = await res.json();
-            audio_comment = data.url;
+          const scoreBase64 = scoreRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+          if (scoreBase64) {
+            audio_score = `data:audio/wav;base64,${scoreBase64}`;
           }
-
-          // Score Audio (Final only)
-          if (config.stage === 'final' && result.total_score) {
-            const scoreText = config.voice_templates.score.replace("{total_score}", result.total_score);
-            const scoreAudioResponse = await ai.models.generateContent({
-              model: ttsModel,
-              contents: [{ parts: [{ text: `请用中性专业女声播报：${scoreText}` }] }],
-              config: {
-                responseModalities: [Modality.AUDIO],
-                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
-              }
-            });
-            const scoreBase64Raw = scoreAudioResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-            if (scoreBase64Raw) {
-              const scoreBase64 = await addWavHeaderAndGetBase64(scoreBase64Raw);
-              const res = await fetch('/api/save-audio', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filename: `${id}_score.wav`, data: scoreBase64 })
-              });
-              const data = await res.json();
-              audio_score = data.url;
-            }
-          }
-        } catch (ttsError) {
-          console.warn("TTS Generation failed (likely offline):", ttsError);
-          // Continue without audio
         }
+      } catch (ttsError) {
+        console.warn("TTS Generation failed:", ttsError);
+        // Continue without audio
       }
 
       // Save Results to Server
@@ -319,7 +296,7 @@ export default function App() {
           )}
 
           {activeTab === 'cases' && <CasesTab onUpdate={fetchData} cases={cases} />}
-          {activeTab === 'config' && <ConfigTab config={config} onUpdate={fetchData} />}
+          {activeTab === 'config' && <ConfigTab config={config} onUpdate={fetchData} callLLM={callLLM} />}
           {activeTab === 'logs' && <LogsTab />}
         </AnimatePresence>
       </main>
@@ -331,6 +308,8 @@ export default function App() {
 
 const CaseCard = ({ item, onProcess, loading, stage }: any) => {
   const [playing, setPlaying] = useState<string | null>(null);
+  const [demoPerf, setDemoPerf] = useState("");
+  const [defensePerf, setDefensePerf] = useState("");
 
   const playAudio = (url: string, type: string) => {
     if (!url) {
@@ -379,6 +358,34 @@ const CaseCard = ({ item, onProcess, loading, stage }: any) => {
           <p className="text-sm text-slate-600 line-clamp-2 italic">“{item.content}”</p>
         </div>
 
+        {/* External Information Inputs */}
+        {item.status !== 'completed' && item.status !== 'fallback' && (
+          <div className="grid grid-cols-2 gap-4 mb-6">
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
+                <Sparkles size={12} className="text-emerald-500" /> 作品演示表现
+              </label>
+              <textarea 
+                value={demoPerf}
+                onChange={(e) => setDemoPerf(e.target.value)}
+                placeholder="如：演示流畅，无BUG，操作便捷..."
+                className="w-full h-24 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none resize-none text-sm"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
+                <Sparkles size={12} className="text-indigo-500" /> 现场答辩表现
+              </label>
+              <textarea 
+                value={defensePerf}
+                onChange={(e) => setDefensePerf(e.target.value)}
+                placeholder="如：逻辑清晰，回答准确，反应迅速..."
+                className="w-full h-24 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none resize-none text-sm"
+              />
+            </div>
+          </div>
+        )}
+
         {item.status === 'completed' || item.status === 'fallback' ? (
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
@@ -403,29 +410,69 @@ const CaseCard = ({ item, onProcess, loading, stage }: any) => {
             </div>
             
             <div className="p-4 border border-slate-100 rounded-xl bg-white">
-              <div className="flex justify-between items-center mb-2">
+              <div className="flex justify-between items-center mb-4">
                 <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">AI 评语摘要</span>
                 {stage === 'final' && (
                   <div className="text-2xl font-black text-emerald-600">{item.result?.total_score} <span className="text-sm font-normal text-slate-400">分</span></div>
                 )}
               </div>
-              <p className="text-sm text-slate-700 leading-relaxed">{item.result?.pure_comment}</p>
+              
+              {stage === 'final' && item.result?.scores && (
+                <div className="grid grid-cols-2 gap-2 mb-4 pb-4 border-b border-slate-50">
+                  {Object.entries(item.result.scores).map(([k, v]: any) => (
+                    <div key={k} className="flex justify-between items-center bg-slate-50 px-3 py-1.5 rounded-lg">
+                      <span className="text-[10px] text-slate-500 uppercase font-bold">{k.replace('_', ' ')}</span>
+                      <span className="text-xs font-black text-slate-700">{v}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <p className="text-sm text-slate-700 leading-relaxed mb-3">{item.result?.pure_comment}</p>
+              {item.result?.score_reason && (
+                <div className="mt-2 p-3 bg-amber-50 rounded-lg border border-amber-100">
+                  <p className="text-[10px] font-bold text-amber-600 uppercase mb-1">打分依据</p>
+                  <p className="text-xs text-amber-800 leading-relaxed">{item.result.score_reason}</p>
+                </div>
+              )}
             </div>
 
             {(item.status === 'fallback' || item.status === 'completed') && (
-              <button 
-                onClick={onProcess}
-                disabled={loading}
-                className="w-full py-3 border-2 border-dashed border-slate-200 text-slate-400 rounded-xl font-bold hover:border-emerald-500 hover:text-emerald-500 transition-all flex items-center justify-center gap-2"
-              >
-                {loading ? <Loader2 className="animate-spin" size={20} /> : <RefreshCw size={18} />}
-                {item.status === 'completed' ? '重新生成 AI 评语' : '重新尝试 AI 智能评测'}
-              </button>
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase">更新演示表现</label>
+                    <input 
+                      value={demoPerf}
+                      onChange={(e) => setDemoPerf(e.target.value)}
+                      placeholder="补充演示细节..."
+                      className="w-full px-3 py-1.5 text-xs bg-white border border-slate-100 rounded-lg outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase">更新答辩表现</label>
+                    <input 
+                      value={defensePerf}
+                      onChange={(e) => setDefensePerf(e.target.value)}
+                      placeholder="补充答辩细节..."
+                      className="w-full px-3 py-1.5 text-xs bg-white border border-slate-100 rounded-lg outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                </div>
+                <button 
+                  onClick={() => onProcess(demoPerf, defensePerf)}
+                  disabled={loading}
+                  className="w-full py-3 border-2 border-dashed border-slate-200 text-slate-400 rounded-xl font-bold hover:border-emerald-500 hover:text-emerald-500 transition-all flex items-center justify-center gap-2"
+                >
+                  {loading ? <Loader2 className="animate-spin" size={20} /> : <RefreshCw size={18} />}
+                  {item.status === 'completed' ? '重新生成 AI 评语' : '重新尝试 AI 智能评测'}
+                </button>
+              </div>
             )}
           </div>
         ) : (
           <button 
-            onClick={onProcess}
+            onClick={() => onProcess(demoPerf, defensePerf)}
             disabled={loading}
             className="w-full py-4 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 transition-colors flex items-center justify-center gap-2"
           >
@@ -516,8 +563,63 @@ const CasesTab = ({ onUpdate, cases }: any) => {
   );
 };
 
-const ConfigTab = ({ config, onUpdate }: any) => {
+const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
   if (!config) return null;
+
+  const [extracting, setExtracting] = useState(false);
+  const [standardText, setStandardText] = useState('');
+
+  const handleExtractRules = async () => {
+    if (!standardText.trim()) return alert('请输入评分标准描述');
+    setExtracting(true);
+    try {
+      const prompt = `
+        你是一个专业的赛事规则解析助手。请将以下非结构化的评分标准描述解析为结构化的 JSON 权重配置。
+        
+        输入描述：
+        ${standardText}
+        
+        要求：
+        1. 提取核心评分维度（如：技术创新、业务价值、现场表现等）。
+        2. 为每个维度分配权重（0.0 到 1.0 之间），所有维度权重之和必须等于 1.0。
+        3. 维度 key 请使用英文小写和下划线（如：technical_innovation）。
+        
+        输出格式：
+        {
+          "weights": {
+            "维度key": 0.3,
+            "维度key2": 0.7
+          }
+        }
+      `;
+
+      const text = await callLLM(prompt);
+      
+      const cleanedText = text.replace(/```json/g, "").replace(/```/g, "").trim();
+      const result = JSON.parse(cleanedText);
+
+      if (result.weights) {
+        await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            ...config, 
+            rules: { 
+              ...config.rules, 
+              weights: result.weights 
+            } 
+          })
+        });
+        alert('评分规则已通过 AI 成功提取并应用');
+        onUpdate();
+      }
+    } catch (e) {
+      console.error(e);
+      alert('AI 提取失败，请检查模型配置或输入内容');
+    } finally {
+      setExtracting(false);
+    }
+  };
 
   const handleToggleStage = async () => {
     const newStage = config.stage === 'semi-final' ? 'final' : 'semi-final';
@@ -529,82 +631,43 @@ const ConfigTab = ({ config, onUpdate }: any) => {
     onUpdate();
   };
 
-  const handleUpdateAISettings = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    const ai_settings = {
-      provider: formData.get('provider'),
-      api_key: formData.get('api_key'),
-      base_url: formData.get('base_url'),
-      model: formData.get('model'),
-    };
-    await fetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...config, ai_settings })
-    });
-    alert('AI 配置已更新');
-    onUpdate();
-  };
-
-  const aiSettings = config.ai_settings || {
-    provider: 'openai',
-    api_key: '',
-    base_url: 'http://localhost:11434/v1',
-    model: 'qwen-plus'
-  };
-
   return (
     <div className="max-w-4xl mx-auto space-y-8">
       <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-200">
-        <h3 className="text-xl font-bold mb-6">AI 模型配置 (本地部署/Qwen)</h3>
-        <form onSubmit={handleUpdateAISettings} className="space-y-6">
-          <div className="grid grid-cols-2 gap-6">
-            <div className="space-y-2">
-              <label className="text-sm font-bold text-slate-700">接口类型</label>
-              <select 
-                name="provider" 
-                defaultValue={aiSettings.provider}
-                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"
-              >
-                <option value="openai">OpenAI 兼容接口 (Qwen/Ollama/Local)</option>
-              </select>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-bold text-slate-700">模型名称 (Model)</label>
-              <input 
-                name="model" 
-                defaultValue={aiSettings.model}
-                placeholder="如: qwen-plus 或 ollama-model"
-                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"
-              />
-            </div>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-bold text-slate-700">API 代理地址 (Base URL)</label>
-            <input 
-              name="base_url" 
-              defaultValue={aiSettings.base_url}
-              placeholder="http://localhost:11434/v1"
-              className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"
-            />
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-bold text-slate-700">API Key</label>
-            <input 
-              name="api_key" 
-              type="password"
-              defaultValue={aiSettings.api_key}
-              placeholder="本地 Ollama 通常不需要 Key"
-              className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"
-            />
-          </div>
+        <h3 className="text-xl font-bold mb-6">AI 评分标准提取</h3>
+        <div className="space-y-4">
+          <p className="text-sm text-slate-500">
+            你可以直接粘贴一段文字描述（例如：“技术创新占40%，商业价值30%，现场演示20%，文档完整性10%”），AI 将自动解析并构建评分规则。
+          </p>
+          <textarea 
+            value={standardText}
+            onChange={(e) => setStandardText(e.target.value)}
+            placeholder="在此输入评分标准描述..."
+            className="w-full h-32 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none resize-none text-sm"
+          />
           <div className="flex justify-end">
-            <button type="submit" className="px-6 py-2 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 transition-colors">
-              保存 AI 配置
+            <button 
+              onClick={handleExtractRules}
+              disabled={extracting}
+              className={cn(
+                "px-6 py-2 rounded-xl font-bold flex items-center gap-2 transition-all",
+                extracting ? "bg-slate-100 text-slate-400 cursor-not-allowed" : "bg-emerald-600 text-white hover:bg-emerald-700"
+              )}
+            >
+              {extracting ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
+                  正在解析...
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" />
+                  AI 自动提取规则
+                </>
+              )}
             </button>
           </div>
-        </form>
+        </div>
       </div>
 
       <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-200">
