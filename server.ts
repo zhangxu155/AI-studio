@@ -17,8 +17,11 @@ app.use('/audio', express.static(AUDIO_DIR));
 
 // Ensure directories exist
 async function initDirs() {
+  console.log("Initializing directories...");
   await fs.mkdir(DATA_DIR, { recursive: true });
   await fs.mkdir(AUDIO_DIR, { recursive: true });
+  console.log(`DATA_DIR: ${DATA_DIR}`);
+  console.log(`AUDIO_DIR: ${AUDIO_DIR}`);
 }
 
 // Data Helpers
@@ -130,10 +133,17 @@ app.post("/api/llm-proxy", async (req, res) => {
     });
 
     const contentType = response.headers.get("content-type");
+    
     if (contentType && contentType.includes("application/json")) {
       const data = await response.json();
       console.log(`LLM Proxy response from ${url}:`, JSON.stringify(data).substring(0, 500));
       res.status(response.status).json(data);
+    } else if (contentType && (contentType.includes("audio/") || contentType.includes("application/octet-stream"))) {
+      // Handle binary audio data
+      const buffer = await response.arrayBuffer();
+      console.log(`LLM Proxy received audio data from ${url} (Size: ${buffer.byteLength})`);
+      res.setHeader("Content-Type", contentType);
+      res.status(response.status).send(Buffer.from(buffer));
     } else {
       const text = await response.text();
       console.error(`LLM Proxy received non-JSON response from ${url} (Status: ${response.status}):`, text.substring(0, 500));

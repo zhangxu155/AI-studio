@@ -216,6 +216,54 @@ export default function App() {
     }
   };
 
+  const callLocalTTS = async (text: string): Promise<string | null> => {
+    if (!config.llm.local_tts_model) return null;
+    
+    try {
+      // Derive TTS URL from LLM URL (replace /chat/completions with /audio/speech)
+      const ttsUrl = config.llm.local_url.replace(/\/chat\/completions$/, '/audio/speech');
+      
+      const response = await fetch('/api/llm-proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: ttsUrl,
+          apiKey: config.llm.local_api_key,
+          body: {
+            model: config.llm.local_tts_model,
+            input: text,
+            voice: 'alloy' // Default voice
+          }
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Local TTS failed: ${response.status} ${errorText}`);
+      }
+
+      const blob = await response.blob();
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64data = reader.result as string;
+          // Remove data:audio/mpeg;base64, prefix or similar
+          const commaIndex = base64data.indexOf(',');
+          if (commaIndex !== -1) {
+            resolve(base64data.substring(commaIndex + 1));
+          } else {
+            resolve(base64data);
+          }
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    } catch (error) {
+      console.error("Local TTS Error:", error);
+      return null;
+    }
+  };
+
   // Robust JSON extraction
   const extractJSON = (text: string) => {
     try {
@@ -295,66 +343,131 @@ export default function App() {
       let audio_comment = "";
       let audio_score = "";
       
+      const speakLocal = (text: string) => {
+        if ('speechSynthesis' in window) {
+          const utterance = new SpeechSynthesisUtterance(text);
+          utterance.lang = 'zh-CN';
+          utterance.rate = 1.0;
+          utterance.pitch = 1.0;
+          window.speechSynthesis.speak(utterance);
+        }
+      };
+
       try {
-        const ai = getGenAI();
-        
-        // Commentary Audio
-        const commentaryText = config.voice_templates.commentary
-          .replace("{team_name}", caseItem.team_name)
-          .replace("{case_name}", caseItem.case_name)
-          .replace("{content}", result.voice_comment);
+        const apiKey = process.env.GEMINI_API_KEY;
+        const localTtsModel = config.llm.local_tts_model;
 
-        const commentaryRes = await ai.models.generateContent({
-          model: "gemini-2.5-flash-preview-tts",
-          contents: [{ parts: [{ text: `请用中性专业女声播报：${commentaryText}` }] }],
-          config: {
-            responseModalities: [Modality.AUDIO],
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
+        if (!apiKey && !localTtsModel) {
+          console.warn("No TTS service configured (Gemini or Local). Using browser local TTS.");
+          
+          // Play local TTS immediately for feedback
+          const commentaryText = config.voice_templates.commentary
+            .replace("{team_name}", caseItem.team_name)
+            .replace("{case_name}", caseItem.case_name)
+            .replace("{content}", result.voice_comment);
+          
+          speakLocal(commentaryText);
+          
+          if (config.stage === 'final' && result.total_score) {
+            const scoreText = config.voice_templates.score.replace("{total_score}", result.total_score);
+            // Delay score a bit to not overlap
+            setTimeout(() => speakLocal(scoreText), 2000);
           }
-        });
-
-        const commentBase64 = commentaryRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-        if (commentBase64) {
-          try {
-            const wavBase64 = await pcmToWavBase64(commentBase64);
+        } else if (localTtsModel) {
+          // Use Local TTS (Qwen/OpenAI compatible)
+          console.log("Using local TTS model:", localTtsModel);
+          
+          const commentaryText = config.voice_templates.commentary
+            .replace("{team_name}", caseItem.team_name)
+            .replace("{case_name}", caseItem.case_name)
+            .replace("{content}", result.voice_comment);
+          
+          const commentBase64 = await callLocalTTS(commentaryText);
+          if (commentBase64) {
             const saveRes = await fetchWithRetry('/api/save-audio', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ filename: `comment_${id}.wav`, data: wavBase64 })
+              body: JSON.stringify({ filename: `comment_${id}.wav`, data: commentBase64 })
             });
             const saveResult = await saveRes.json();
             audio_comment = saveResult.url;
-          } catch (audioErr: any) {
-            console.error("Failed to save commentary audio:", audioErr);
           }
-        }
 
-        // Score Audio (Final only)
-        if (config.stage === 'final' && result.total_score) {
-          const scoreText = config.voice_templates.score.replace("{total_score}", result.total_score);
+          if (config.stage === 'final' && result.total_score) {
+            const scoreText = config.voice_templates.score.replace("{total_score}", result.total_score);
+            const scoreBase64 = await callLocalTTS(scoreText);
+            if (scoreBase64) {
+              const saveRes = await fetchWithRetry('/api/save-audio', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: `score_${id}.wav`, data: scoreBase64 })
+              });
+              const saveResult = await saveRes.json();
+              audio_score = saveResult.url;
+            }
+          }
+        } else {
+          // Use Gemini TTS
+          const ai = getGenAI();
+          
+          // Commentary Audio
+          const commentaryText = config.voice_templates.commentary
+            .replace("{team_name}", caseItem.team_name)
+            .replace("{case_name}", caseItem.case_name)
+            .replace("{content}", result.voice_comment);
 
-          const scoreRes = await ai.models.generateContent({
+          const commentaryRes = await ai.models.generateContent({
             model: "gemini-2.5-flash-preview-tts",
-            contents: [{ parts: [{ text: `请用中性专业女声播报：${scoreText}` }] }],
+            contents: [{ parts: [{ text: `请用中性专业女声播报：${commentaryText}` }] }],
             config: {
               responseModalities: [Modality.AUDIO],
               speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
             }
           });
 
-          const scoreBase64 = scoreRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-          if (scoreBase64) {
+          const commentBase64 = commentaryRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+          if (commentBase64) {
             try {
-              const wavBase64 = await pcmToWavBase64(scoreBase64);
+              const wavBase64 = await pcmToWavBase64(commentBase64);
               const saveRes = await fetchWithRetry('/api/save-audio', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filename: `score_${id}.wav`, data: wavBase64 })
+                body: JSON.stringify({ filename: `comment_${id}.wav`, data: wavBase64 })
               });
               const saveResult = await saveRes.json();
-              audio_score = saveResult.url;
+              audio_comment = saveResult.url;
             } catch (audioErr: any) {
-              console.error("Failed to save score audio:", audioErr);
+              console.error("Failed to save commentary audio:", audioErr);
+            }
+          }
+
+          // Score Audio (Final only)
+          if (config.stage === 'final' && result.total_score) {
+            const scoreText = config.voice_templates.score.replace("{total_score}", result.total_score);
+
+            const scoreRes = await ai.models.generateContent({
+              model: "gemini-2.5-flash-preview-tts",
+              contents: [{ parts: [{ text: `请用中性专业女声播报：${scoreText}` }] }],
+              config: {
+                responseModalities: [Modality.AUDIO],
+                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
+              }
+            });
+
+            const scoreBase64 = scoreRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+            if (scoreBase64) {
+              try {
+                const wavBase64 = await pcmToWavBase64(scoreBase64);
+                const saveRes = await fetchWithRetry('/api/save-audio', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ filename: `score_${id}.wav`, data: wavBase64 })
+                });
+                const saveResult = await saveRes.json();
+                audio_score = saveResult.url;
+              } catch (audioErr: any) {
+                console.error("Failed to save score audio:", audioErr);
+              }
             }
           }
         }
@@ -936,6 +1049,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
     local_url: 'http://localhost:11434/v1/chat/completions',
     local_model: 'llama3',
     local_api_key: '',
+    local_tts_model: '',
     ...config.llm 
   });
   const [saving, setSaving] = useState(false);
@@ -948,6 +1062,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
       local_url: 'http://localhost:11434/v1/chat/completions',
       local_model: 'llama3',
       local_api_key: '',
+      local_tts_model: '',
       ...config.llm 
     });
   }, [config]);
@@ -1134,7 +1249,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
                   placeholder="llama3 / qwen2"
                 />
               </div>
-              <div className="space-y-2 col-span-2">
+              <div className="space-y-2">
                 <label className="text-sm font-bold text-slate-700">API Key (可选)</label>
                 <input 
                   type="password"
@@ -1142,6 +1257,16 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
                   onChange={e => setEditingLLM({ ...editingLLM, local_api_key: e.target.value })}
                   className="w-full px-4 py-2 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
                   placeholder="如果本地服务需要鉴权请填写"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-700">TTS 模型名称 (可选)</label>
+                <input 
+                  type="text"
+                  value={editingLLM.local_tts_model || ""}
+                  onChange={e => setEditingLLM({ ...editingLLM, local_tts_model: e.target.value })}
+                  className="w-full px-4 py-2 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="例如: qwen-tts / cosyvoice"
                 />
               </div>
               <div className="col-span-2">
