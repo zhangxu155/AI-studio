@@ -7,7 +7,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 const DATA_DIR = path.resolve("data");
 const AUDIO_DIR = path.resolve("public/audio");
@@ -112,6 +112,46 @@ app.post("/api/save-audio", async (req, res) => {
 app.get("/api/logs", async (req, res) => {
   const logs = await readJson("logs.json");
   res.json(logs);
+});
+
+// 7. LLM Proxy (To bypass CORS for local models)
+app.post("/api/llm-proxy", async (req, res) => {
+  const { url, method, headers, body } = req.body;
+  console.log(`POST /api/llm-proxy to ${url}`);
+  
+  try {
+    const response = await fetch(url, {
+      method: method || 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...headers
+      },
+      body: JSON.stringify(body)
+    });
+
+    const contentType = response.headers.get("content-type");
+    if (contentType && contentType.includes("application/json")) {
+      const data = await response.json();
+      console.log(`LLM Proxy response from ${url}:`, JSON.stringify(data).substring(0, 500));
+      res.status(response.status).json(data);
+    } else {
+      const text = await response.text();
+      console.error(`LLM Proxy received non-JSON response from ${url} (Status: ${response.status}):`, text.substring(0, 500));
+      
+      // If the target returned 200 but it's not JSON, it's a failure for our purposes
+      const statusCode = response.status === 200 ? 502 : response.status;
+      
+      res.status(statusCode).json({ 
+        error: "LLM Proxy received non-JSON response", 
+        status: response.status,
+        details: text.substring(0, 200),
+        message: "AI 网关返回了网页内容而非数据。请检查：1. API 地址是否准确（是否漏了 /v1/chat/completions）；2. 是否需要连接公司内网；3. API Key 是否有效。"
+      });
+    }
+  } catch (e: any) {
+    console.error(`LLM Proxy Error for ${url}:`, e);
+    res.status(500).json({ error: "LLM Proxy failed", details: e.message });
+  }
 });
 
 // Vite Integration

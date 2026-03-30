@@ -135,32 +135,69 @@ export default function App() {
   const callLLM = async (prompt: string) => {
     try {
       if (config.llm?.provider === 'local') {
-        const response = await fetch(config.llm.local_url, {
+        // Automatically append /chat/completions if missing for OpenAI-compatible APIs
+        let targetUrl = config.llm.local_url;
+        if (targetUrl && !targetUrl.endsWith('/chat/completions') && !targetUrl.endsWith('/completions')) {
+          targetUrl = targetUrl.endsWith('/') ? targetUrl + 'chat/completions' : targetUrl + '/chat/completions';
+        }
+
+        const response = await fetch('/api/llm-proxy', {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
-            ...(config.llm.local_api_key ? { 'Authorization': `Bearer ${config.llm.local_api_key}` } : {})
+            'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            model: config.llm.local_model,
-            messages: [
-              { role: 'user', content: prompt + "\n\n请直接输出 JSON 字符串，不要包含任何 Markdown 代码块格式。" }
-            ],
-            temperature: 0.7
+            url: targetUrl,
+            method: 'POST',
+            headers: config.llm.local_api_key ? { 'Authorization': `Bearer ${config.llm.local_api_key}` } : {},
+            body: {
+              model: config.llm.local_model,
+              messages: [
+                { role: 'user', content: prompt + "\n\n请直接输出 JSON 字符串，不要包含任何 Markdown 代码块格式。" }
+              ],
+              temperature: 0.7
+            }
           })
         });
 
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          throw new Error(`本地模型调用失败: ${response.status} ${JSON.stringify(errorData)}`);
+        const contentType = response.headers.get("content-type");
+        let result;
+        if (contentType && contentType.includes("application/json")) {
+          result = await response.json();
+        } else {
+          const text = await response.text();
+          throw new Error(`服务器返回了非 JSON 响应 (状态码: ${response.status})。内容片段: ${text.substring(0, 100)}`);
+        }
+        
+        if (!response.ok || result.error) {
+          const errMsg = result.message || result.error || JSON.stringify(result);
+          throw new Error(`本地模型调用失败: ${response.status} ${errMsg}`);
         }
 
-        const result = await response.json();
-        const content = result.choices?.[0]?.message?.content;
-        if (content) {
-          return content.replace(/```json/g, "").replace(/```/g, "").trim();
+        // Try different common response paths (OpenAI, Ollama, Anthropic, etc.)
+        let content = result.choices?.[0]?.message?.content ?? 
+                      result.choices?.[0]?.text ?? 
+                      result.content ?? 
+                      result.message ??
+                      result.data?.choices?.[0]?.message?.content;
+        
+        // If still not found, try to find any string property that looks like a response
+        if (content === undefined || content === null) {
+          if (typeof result === 'string') {
+            content = result;
+          } else if (result.text && typeof result.text === 'string') {
+            content = result.text;
+          }
         }
-        throw new Error("本地模型返回内容为空");
+        
+        if (content !== undefined && content !== null) {
+          const processedContent = content.toString().replace(/```json/g, "").replace(/```/g, "").trim();
+          if (processedContent) return processedContent;
+        }
+        
+        console.error("LLM Response Structure:", result);
+        const keys = Object.keys(result).join(', ');
+        throw new Error(`本地模型返回内容为空或格式不正确。收到字段: [${keys}]。请检查终端日志查看完整响应。`);
       } else {
         const ai = getGenAI();
         const response = await ai.models.generateContent({
@@ -176,6 +213,29 @@ export default function App() {
     } catch (error: any) {
       console.error("LLM API Error:", error);
       throw new Error(`AI 服务调用失败: ${error.message || '未知错误'}`);
+    }
+  };
+
+  // Robust JSON extraction
+  const extractJSON = (text: string) => {
+    try {
+      // 1. Try direct parse first
+      return JSON.parse(text);
+    } catch (e) {
+      // 2. Try to find JSON block
+      const start = text.indexOf('{');
+      const end = text.lastIndexOf('}');
+      if (start !== -1 && end !== -1 && end > start) {
+        const jsonStr = text.substring(start, end + 1);
+        try {
+          return JSON.parse(jsonStr);
+        } catch (e2) {
+          console.error("Failed to parse extracted JSON block:", jsonStr);
+          throw new Error("模型返回的 JSON 格式不正确，请重试。");
+        }
+      }
+      console.error("No JSON block found in text:", text);
+      throw new Error("模型返回内容不包含有效的 JSON 数据。");
     }
   };
 
@@ -213,7 +273,7 @@ export default function App() {
         
         评分标准（严格遵守权重分配）：
         ${scoringCriteria}
-
+ 
         请输出JSON格式：
         {
           "pure_comment": "结构化文字点评",
@@ -228,9 +288,8 @@ export default function App() {
 
       const text = await callLLM(prompt);
       
-      // Clean Markdown
-      const cleanedText = text.replace(/```json/g, "").replace(/```/g, "").trim();
-      const result = JSON.parse(cleanedText);
+      // Clean and Parse JSON robustly
+      const result = extractJSON(text);
 
       // B. Generate TTS (Optional/Best effort)
       let audio_comment = "";
