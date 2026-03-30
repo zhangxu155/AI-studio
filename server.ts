@@ -39,22 +39,26 @@ async function writeJson(filename: string, data: any) {
 
 // 1. Config
 app.get("/api/config", async (req, res) => {
+  console.log("GET /api/config");
   const config = await readJson("config.json");
   res.json(config);
 });
 
 app.post("/api/config", async (req, res) => {
+  console.log("POST /api/config");
   await writeJson("config.json", req.body);
   res.json({ success: true });
 });
 
 // 2. Cases
 app.get("/api/cases", async (req, res) => {
+  console.log("GET /api/cases");
   const cases = await readJson("cases.json");
   res.json(cases);
 });
 
 app.post("/api/cases", async (req, res) => {
+  console.log("POST /api/cases");
   const cases = await readJson("cases.json");
   const newCase = { ...req.body, id: `CASE_${Date.now()}`, status: 'pending' };
   cases.push(newCase);
@@ -65,6 +69,7 @@ app.post("/api/cases", async (req, res) => {
 // 4. Save Process Result
 app.post("/api/save-process-result", async (req, res) => {
   const { id, result, status, audio_comment, audio_score } = req.body;
+  console.log(`POST /api/save-process-result for ${id}`);
   const cases = await readJson("cases.json");
   const caseItem = cases.find((c: any) => c.id === id);
 
@@ -88,10 +93,17 @@ app.post("/api/save-process-result", async (req, res) => {
 // 5. Save Audio
 app.post("/api/save-audio", async (req, res) => {
   const { filename, data } = req.body;
+  console.log(`POST /api/save-audio: ${filename} (size: ${data?.length})`);
+  if (!data) {
+    return res.status(400).json({ error: "No data provided" });
+  }
   try {
-    await fs.writeFile(path.join(AUDIO_DIR, filename), Buffer.from(data, 'base64'));
+    const filePath = path.join(AUDIO_DIR, filename);
+    await fs.writeFile(filePath, Buffer.from(data, 'base64'));
+    console.log(`Saved audio to ${filePath}`);
     res.json({ success: true, url: `/audio/${filename}` });
   } catch (e: any) {
+    console.error(`Failed to save audio ${filename}:`, e);
     res.status(500).json({ error: "Failed to save audio", details: e.message });
   }
 });

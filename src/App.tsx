@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Settings, Users, PlayCircle, FileText, Activity, ShieldAlert, CheckCircle2, Loader2, Volume2, Trophy, RefreshCw, Sparkles } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Settings, Users, PlayCircle, FileText, Activity, ShieldAlert, CheckCircle2, Loader2, Volume2, Trophy, RefreshCw, Sparkles, Mic, Square, Radio } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -9,6 +9,59 @@ import { GoogleGenAI, Modality } from "@google/genai";
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
+}
+
+async function pcmToWavBase64(pcmBase64: string, sampleRate: number = 24000): Promise<string> {
+  try {
+    if (!pcmBase64) throw new Error("PCM data is empty");
+    const binaryString = atob(pcmBase64);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    
+    const buffer = new ArrayBuffer(44 + len);
+    const view = new DataView(buffer);
+
+    // RIFF chunk descriptor
+    view.setUint32(0, 0x52494646, false); // "RIFF"
+    view.setUint32(4, 36 + len, true); // ChunkSize
+    view.setUint32(8, 0x57415645, false); // "WAVE"
+
+    // fmt sub-chunk
+    view.setUint32(12, 0x666d7420, false); // "fmt "
+    view.setUint32(16, 16, true); // Subchunk1Size
+    view.setUint16(20, 1, true); // AudioFormat (PCM)
+    view.setUint16(22, 1, true); // NumChannels (Mono)
+    view.setUint32(24, sampleRate, true); // SampleRate
+    view.setUint32(28, sampleRate * 2, true); // ByteRate
+    view.setUint16(32, 2, true); // BlockAlign
+    view.setUint16(34, 16, true); // BitsPerSample
+
+    // data sub-chunk
+    view.setUint32(36, 0x64617461, false); // "data"
+    view.setUint32(40, len, true); // Subchunk2Size
+
+    // Write PCM data
+    const uint8View = new Uint8Array(buffer);
+    uint8View.set(bytes, 44);
+
+    // Convert to base64 using FileReader for robustness
+    const blob = new Blob([buffer], { type: 'audio/wav' });
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64 = (reader.result as string).split(',')[1];
+        resolve(base64);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  } catch (e: any) {
+    console.error("pcmToWavBase64 error:", e);
+    throw e;
+  }
 }
 
 // --- Components ---
@@ -33,17 +86,37 @@ export default function App() {
   const [config, setConfig] = useState<any>(null);
   const [cases, setCases] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+
+  const fetchWithRetry = async (url: string, options: any = {}, retries: number = 3) => {
+    for (let i = 0; i < retries; i++) {
+      try {
+        const res = await fetch(url, options);
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({}));
+          throw new Error(errorData.error || `HTTP error! status: ${res.status}`);
+        }
+        return res;
+      } catch (e: any) {
+        console.warn(`Fetch attempt ${i + 1} failed for ${url}:`, e);
+        if (i === retries - 1) throw e;
+        await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+      }
+    }
+    throw new Error(`Failed to fetch ${url} after ${retries} attempts`);
+  };
 
   const fetchData = async () => {
     try {
       const [configRes, casesRes] = await Promise.all([
-        fetch('/api/config'),
-        fetch('/api/cases')
+        fetchWithRetry('/api/config'),
+        fetchWithRetry('/api/cases')
       ]);
       setConfig(await configRes.json());
       setCases(await casesRes.json());
-    } catch (e) {
+    } catch (e: any) {
       console.error("Fetch error", e);
+      alert(`数据加载失败: ${e.message}`);
     }
   };
 
@@ -61,20 +134,47 @@ export default function App() {
 
   const callLLM = async (prompt: string) => {
     try {
-      const ai = getGenAI();
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [{ parts: [{ text: prompt + "\n\n请直接输出 JSON 字符串，不要包含任何 Markdown 代码块格式。" }] }],
-      });
-      
-      if (response.text) {
-        // Remove potential markdown formatting if the model still includes it
-        const cleanedText = response.text.replace(/```json/g, "").replace(/```/g, "").trim();
-        return cleanedText;
+      if (config.llm?.provider === 'local') {
+        const response = await fetch(config.llm.local_url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(config.llm.local_api_key ? { 'Authorization': `Bearer ${config.llm.local_api_key}` } : {})
+          },
+          body: JSON.stringify({
+            model: config.llm.local_model,
+            messages: [
+              { role: 'user', content: prompt + "\n\n请直接输出 JSON 字符串，不要包含任何 Markdown 代码块格式。" }
+            ],
+            temperature: 0.7
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(`本地模型调用失败: ${response.status} ${JSON.stringify(errorData)}`);
+        }
+
+        const result = await response.json();
+        const content = result.choices?.[0]?.message?.content;
+        if (content) {
+          return content.replace(/```json/g, "").replace(/```/g, "").trim();
+        }
+        throw new Error("本地模型返回内容为空");
+      } else {
+        const ai = getGenAI();
+        const response = await ai.models.generateContent({
+          model: "gemini-3-flash-preview",
+          contents: [{ parts: [{ text: prompt + "\n\n请直接输出 JSON 字符串，不要包含任何 Markdown 代码块格式。" }] }],
+        });
+        
+        if (response.text) {
+          return response.text.replace(/```json/g, "").replace(/```/g, "").trim();
+        }
+        throw new Error("模型返回内容为空");
       }
-      throw new Error("模型返回内容为空");
     } catch (error: any) {
-      console.error("Gemini API Error:", error);
+      console.error("LLM API Error:", error);
       throw new Error(`AI 服务调用失败: ${error.message || '未知错误'}`);
     }
   };
@@ -86,6 +186,13 @@ export default function App() {
       if (!caseItem) throw new Error("Case not found");
 
       // A. Generate Commentary & Scores
+      const scoringCriteria = Object.entries(config.rules.weights)
+        .map(([key, weight]: any) => {
+          const maxPoints = Math.round(weight * 100);
+          return `${key} (权重: ${maxPoints}%): 请根据方案内容和现场表现给出 0-${maxPoints} 之间的分数。`;
+        })
+        .join('\n        ');
+
       const prompt = `
         你是一位专业评委，正在参加「研发总院智能体大赛」。
         当前赛事阶段：${config.stage === 'final' ? '决赛' : '复赛'}。
@@ -99,42 +206,23 @@ export default function App() {
         作品演示表现：${demoPerf || "（未提供演示表现，请主要基于方案内容评估）"}
         现场答辩表现：${defensePerf || "（未提供答辩表现，请主要基于方案内容评估）"}
         
-        点评规则：${config.rules.commentary_structure}，字数${config.rules.commentary_length}。
+        点评要求：
+        1. 结构：${config.rules.commentary_structure}
+        2. 字数：${config.rules.commentary_length}
+        3. 语言：专业、客观、具有启发性。
         
-        评分标准（严格遵守）：
-        1. 作品演示 (满分35分):
-           - 35-26: 功能演示符合预期，运行稳定，无明显bug，操作便捷。
-           - 25-16: 演示符合预期，解决业务痛点，数据支撑充分。
-           - 15-6: 部分实现，基本稳定，少量bug，效果一般。
-           - 5-0: 未实现或不稳定，bug较多，无法正常演示。
-        2. 技术深度与合理性 (满分25分):
-           - 25-21: 架构合理，算法选型科学，过程规范，数据严谨，符合汽车研发安全合规。
-           - 20-16: 架构基本合理，算法适配需求，过程规范，基本合规。
-           - 15-11: 架构少量不合理，算法基本适配，数据处理不够严谨。
-           - 10-0: 架构混乱，选型不合理，不合规，有技术风险。
-        3. 业务落地价值 (满分20分):
-           - 20-16: 直接应用于汽车研发，显著提升效率/降本，解决长期痛点，高推广价值。
-           - 15-11: 应用于部分场景，有一定提升和推广潜力。
-           - 10-6: 结合不紧密，落地价值有限。
-           - 5-0: 无实际落地价值。
-        4. 现场答辩 (满分20分):
-           - 20-16: 逻辑清晰，表达流畅，准确阐述亮点/价值，回答准确全面，反应迅速。
-           - 15-11: 逻辑基本清晰，表达较流畅，能阐述核心，回答基本准确。
-           - 10-6: 逻辑/表达欠佳，阐述不完整，回答不够准确。
-           - 5-0: 混乱，无法阐述核心或回答基本提问。
+        评分标准（严格遵守权重分配）：
+        ${scoringCriteria}
 
         请输出JSON格式：
         {
           "pure_comment": "结构化文字点评",
           "voice_comment": "适合语音播报的简洁版点评（60-90秒语速）",
           "scores": { 
-            "work_demonstration": 评分, 
-            "technical_depth": 评分, 
-            "business_value": 评分, 
-            "defense_performance": 评分 
+            ${Object.keys(config.rules.weights).map(key => `"${key}": 评分`).join(',\n            ')}
           }, 
-          "total_score": 总分, 
-          "score_reason": "打分依据（请结合现场表现和方案内容详细说明）"
+          "total_score": 总分（各项得分之和）, 
+          "score_reason": "打分依据（请结合现场表现和方案内容详细说明各项得分理由）"
         }
       `;
 
@@ -168,7 +256,18 @@ export default function App() {
 
         const commentBase64 = commentaryRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
         if (commentBase64) {
-          audio_comment = `data:audio/wav;base64,${commentBase64}`;
+          try {
+            const wavBase64 = await pcmToWavBase64(commentBase64);
+            const saveRes = await fetchWithRetry('/api/save-audio', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ filename: `comment_${id}.wav`, data: wavBase64 })
+            });
+            const saveResult = await saveRes.json();
+            audio_comment = saveResult.url;
+          } catch (audioErr: any) {
+            console.error("Failed to save commentary audio:", audioErr);
+          }
         }
 
         // Score Audio (Final only)
@@ -186,16 +285,26 @@ export default function App() {
 
           const scoreBase64 = scoreRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
           if (scoreBase64) {
-            audio_score = `data:audio/wav;base64,${scoreBase64}`;
+            try {
+              const wavBase64 = await pcmToWavBase64(scoreBase64);
+              const saveRes = await fetchWithRetry('/api/save-audio', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: `score_${id}.wav`, data: wavBase64 })
+              });
+              const saveResult = await saveRes.json();
+              audio_score = saveResult.url;
+            } catch (audioErr: any) {
+              console.error("Failed to save score audio:", audioErr);
+            }
           }
         }
-      } catch (ttsError) {
+      } catch (ttsError: any) {
         console.warn("TTS Generation failed:", ttsError);
-        // Continue without audio
       }
 
       // Save Results to Server
-      await fetch('/api/save-process-result', {
+      await fetchWithRetry('/api/save-process-result', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -216,10 +325,50 @@ export default function App() {
     }
   };
 
+  const handleDownloadData = () => {
+    const data = {
+      config,
+      cases,
+      exportedAt: new Date().toISOString()
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `judge_system_export_${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
-    <div className="h-screen bg-slate-50 flex font-sans overflow-hidden">
+    <div className="h-screen bg-slate-50 flex font-sans overflow-hidden relative">
+      {/* Sidebar Toggle Button (Floating when collapsed) */}
+      {isSidebarCollapsed && (
+        <button 
+          onClick={() => setIsSidebarCollapsed(false)}
+          className="absolute top-6 left-6 z-50 p-2.5 bg-white rounded-xl border border-slate-200 shadow-lg text-emerald-600 hover:bg-slate-50 transition-all flex items-center gap-2 group"
+          title="展开侧边栏"
+        >
+          <Trophy size={20} />
+          <span className="text-xs font-bold opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">展开菜单</span>
+        </button>
+      )}
+
       {/* Sidebar */}
-      <aside className="w-64 bg-white border-r border-slate-200 flex flex-col shadow-sm">
+      <aside className={cn(
+        "bg-white border-r border-slate-200 flex flex-col shadow-sm transition-all duration-300 relative flex-shrink-0",
+        isSidebarCollapsed ? "w-0 -translate-x-full overflow-hidden" : "w-64 translate-x-0"
+      )}>
+        <button 
+          onClick={() => setIsSidebarCollapsed(true)}
+          className="absolute top-6 right-4 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-lg transition-colors z-10"
+          title="收起侧边栏"
+        >
+          <Square size={16} className="rotate-90" />
+        </button>
+
         <div className="p-8 border-bottom border-slate-100">
           <div className="flex items-center gap-2 text-emerald-600 mb-2">
             <Trophy size={32} strokeWidth={2.5} />
@@ -285,9 +434,10 @@ export default function App() {
                     <CaseCard 
                       key={item.id} 
                       item={item} 
-                      onProcess={() => handleProcess(item.id)} 
+                      onProcess={(demo: string, defense: string) => handleProcess(item.id, demo, defense)} 
                       loading={loading}
                       stage={config?.stage}
+                      callLLM={callLLM}
                     />
                   ))
                 )}
@@ -297,7 +447,7 @@ export default function App() {
 
           {activeTab === 'cases' && <CasesTab onUpdate={fetchData} cases={cases} />}
           {activeTab === 'config' && <ConfigTab config={config} onUpdate={fetchData} callLLM={callLLM} />}
-          {activeTab === 'logs' && <LogsTab />}
+          {activeTab === 'logs' && <LogsTab config={config} cases={cases} />}
         </AnimatePresence>
       </main>
     </div>
@@ -306,30 +456,144 @@ export default function App() {
 
 // --- Sub-components ---
 
-const CaseCard = ({ item, onProcess, loading, stage }: any) => {
+const CaseCard = ({ item, onProcess, loading, stage, callLLM }: any) => {
   const [playing, setPlaying] = useState<string | null>(null);
   const [demoPerf, setDemoPerf] = useState("");
   const [defensePerf, setDefensePerf] = useState("");
+  
+  // Live Perception State
+  const [isListening, setIsListening] = useState(false);
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  const startListening = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
+        await handleLiveSummarization(audioBlob);
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsListening(true);
+    } catch (err) {
+      console.error("Failed to start listening", err);
+      alert("无法开启麦克风，请检查权限设置。");
+    }
+  };
+
+  const stopListening = () => {
+    if (mediaRecorderRef.current && isListening) {
+      mediaRecorderRef.current.stop();
+      setIsListening(false);
+    }
+  };
+
+  const handleLiveSummarization = async (blob: Blob) => {
+    setIsSummarizing(true);
+    try {
+      // Convert blob to base64
+      const reader = new FileReader();
+      const base64Promise = new Promise<string>((resolve) => {
+        reader.onloadend = () => {
+          const base64String = (reader.result as string).split(',')[1];
+          resolve(base64String);
+        };
+      });
+      reader.readAsDataURL(blob);
+      const base64Audio = await base64Promise;
+
+      const prompt = `
+        你是一个专业的赛事观察员。请根据这段现场录音（包含选手的演示说明和评委的答辩对话），总结选手的现场表现。
+        
+        请输出JSON格式：
+        {
+          "demo_summary": "作品演示表现总结（如：演示过程是否流畅，是否有技术故障，操作是否便捷等）",
+          "defense_summary": "现场答辩表现总结（如：逻辑是否清晰，回答问题是否准确，反应速度等）"
+        }
+      `;
+
+      const ai = new GoogleGenAI({ apiKey: (process as any).env.GEMINI_API_KEY });
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          { text: prompt },
+          {
+            inlineData: {
+              mimeType: "audio/wav",
+              data: base64Audio
+            }
+          }
+        ],
+        config: { responseMimeType: "application/json" }
+      });
+
+      const result = JSON.parse(response.text || "{}");
+      if (result.demo_summary) setDemoPerf(result.demo_summary);
+      if (result.defense_summary) setDefensePerf(result.defense_summary);
+      
+    } catch (err) {
+      console.error("Summarization failed", err);
+      alert("现场表现自动总结失败，您可以手动输入。");
+    } finally {
+      setIsSummarizing(false);
+    }
+  };
 
   const playAudio = (url: string, type: string) => {
     if (!url) {
       alert("暂无语音文件，请先点击“开始 AI 智能评测”生成。");
       return;
     }
+    
+    console.log(`Attempting to play audio from: ${url}`);
+    
     // 添加时间戳防止浏览器缓存旧的错误文件
     const audio = new Audio(`${url}?t=${Date.now()}`);
     setPlaying(type);
-    audio.load();
-    audio.play().catch(e => {
-      console.error("Audio play error", e);
-      setPlaying(null);
-      alert("语音播放失败。请确保您已点击“重新尝试评测”以生成正确的 WAV 格式文件。");
-    });
-    audio.onended = () => setPlaying(null);
-    audio.onerror = () => {
-      setPlaying(null);
-      alert("语音资源加载失败，请检查网络或重新生成。");
+    
+    audio.oncanplaythrough = () => {
+      console.log("Audio can play through");
+      audio.play().catch(e => {
+        console.error("Audio play error:", e);
+        setPlaying(null);
+        alert(`语音播放失败: ${e.message || '浏览器限制或文件损坏'}`);
+      });
     };
+
+    audio.onended = () => {
+      console.log("Audio playback ended");
+      setPlaying(null);
+    };
+
+    audio.onerror = (e) => {
+      console.error("Audio loading error:", e, audio.error);
+      setPlaying(null);
+      let msg = "语音资源加载失败";
+      if (audio.error) {
+        switch (audio.error.code) {
+          case 1: msg += " (加载被中止)"; break;
+          case 2: msg += " (网络错误)"; break;
+          case 3: msg += " (解码错误)"; break;
+          case 4: msg += " (资源不支持)"; break;
+        }
+      }
+      alert(`${msg}，请检查网络或重新生成。`);
+    };
+
+    audio.load();
   };
 
   return (
@@ -358,30 +622,68 @@ const CaseCard = ({ item, onProcess, loading, stage }: any) => {
           <p className="text-sm text-slate-600 line-clamp-2 italic">“{item.content}”</p>
         </div>
 
-        {/* External Information Inputs */}
+        {/* Live Perception Section */}
         {item.status !== 'completed' && item.status !== 'fallback' && (
-          <div className="grid grid-cols-2 gap-4 mb-6">
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
-                <Sparkles size={12} className="text-emerald-500" /> 作品演示表现
-              </label>
-              <textarea 
-                value={demoPerf}
-                onChange={(e) => setDemoPerf(e.target.value)}
-                placeholder="如：演示流畅，无BUG，操作便捷..."
-                className="w-full h-24 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none resize-none text-sm"
-              />
+          <div className="mb-6 p-4 bg-emerald-50/50 border border-emerald-100 rounded-2xl">
+            <div className="flex justify-between items-center mb-4">
+              <div className="flex items-center gap-2">
+                <div className={cn(
+                  "w-2 h-2 rounded-full",
+                  isListening ? "bg-red-500 animate-pulse" : "bg-slate-300"
+                )} />
+                <span className="text-sm font-bold text-slate-700">现场智能感知助手</span>
+              </div>
+              <button
+                onClick={isListening ? stopListening : startListening}
+                disabled={isSummarizing}
+                className={cn(
+                  "px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-2 transition-all",
+                  isListening 
+                    ? "bg-red-100 text-red-600 hover:bg-red-200" 
+                    : "bg-emerald-600 text-white hover:bg-emerald-700"
+                )}
+              >
+                {isSummarizing ? (
+                  <Loader2 className="animate-spin" size={14} />
+                ) : isListening ? (
+                  <Square size={14} fill="currentColor" />
+                ) : (
+                  <Mic size={14} />
+                )}
+                {isSummarizing ? "正在智能总结现场表现..." : isListening ? "停止监听并总结" : "开启现场监听"}
+              </button>
             </div>
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1">
-                <Sparkles size={12} className="text-indigo-500" /> 现场答辩表现
-              </label>
-              <textarea 
-                value={defensePerf}
-                onChange={(e) => setDefensePerf(e.target.value)}
-                placeholder="如：逻辑清晰，回答准确，反应迅速..."
-                className="w-full h-24 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none resize-none text-sm"
-              />
+            
+            {isListening && (
+              <div className="flex items-center gap-3 py-2 px-3 bg-white rounded-xl border border-emerald-100 mb-4">
+                <Radio className="text-red-500 animate-pulse" size={16} />
+                <span className="text-xs text-slate-500 font-medium">正在实时感知现场演示与答辩对话...</span>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                  作品演示表现 (AI 自动总结)
+                </label>
+                <textarea 
+                  value={demoPerf}
+                  onChange={(e) => setDemoPerf(e.target.value)}
+                  placeholder="开启监听后自动填充..."
+                  className="w-full h-24 px-3 py-2 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none resize-none text-sm transition-all"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                  现场答辩表现 (AI 自动总结)
+                </label>
+                <textarea 
+                  value={defensePerf}
+                  onChange={(e) => setDefensePerf(e.target.value)}
+                  placeholder="开启监听后自动填充..."
+                  className="w-full h-24 px-3 py-2 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none resize-none text-sm transition-all"
+                />
+              </div>
             </div>
           </div>
         )}
@@ -568,6 +870,63 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
 
   const [extracting, setExtracting] = useState(false);
   const [standardText, setStandardText] = useState('');
+  const [editingWeights, setEditingWeights] = useState({ ...config.rules.weights });
+  const [editingTemplates, setEditingTemplates] = useState({ ...config.voice_templates });
+  const [editingLLM, setEditingLLM] = useState({ 
+    provider: 'gemini',
+    local_url: 'http://localhost:11434/v1/chat/completions',
+    local_model: 'llama3',
+    local_api_key: '',
+    ...config.llm 
+  });
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setEditingWeights({ ...config.rules.weights });
+    setEditingTemplates({ ...config.voice_templates });
+    setEditingLLM({ 
+      provider: 'gemini',
+      local_url: 'http://localhost:11434/v1/chat/completions',
+      local_model: 'llama3',
+      local_api_key: '',
+      ...config.llm 
+    });
+  }, [config]);
+
+  const handleSaveConfig = async () => {
+    setSaving(true);
+    try {
+      // Ensure weights sum to 1.0 (approximately)
+      const sum = Object.values(editingWeights).reduce((a: any, b: any) => a + b, 0) as number;
+      if (Math.abs(sum - 1) > 0.05) { // Allow some floating point variance
+        if (!confirm(`当前权重总和为 ${(sum * 100).toFixed(1)}%，建议总和为 100%。是否继续保存？`)) {
+          setSaving(false);
+          return;
+        }
+      }
+
+      await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          ...config, 
+          llm: editingLLM,
+          rules: { 
+            ...config.rules, 
+            weights: editingWeights 
+          },
+          voice_templates: editingTemplates
+        })
+      });
+      alert('配置已保存');
+      onUpdate();
+    } catch (e) {
+      console.error(e);
+      alert('保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const handleExtractRules = async () => {
     if (!standardText.trim()) return alert('请输入评分标准描述');
@@ -582,13 +941,13 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
         要求：
         1. 提取核心评分维度（如：技术创新、业务价值、现场表现等）。
         2. 为每个维度分配权重（0.0 到 1.0 之间），所有维度权重之和必须等于 1.0。
-        3. 维度 key 请使用英文小写和下划线（如：technical_innovation）。
+        3. 维度 key 请直接使用中文名称（如："技术创新"）。
         
         输出格式：
         {
           "weights": {
-            "维度key": 0.3,
-            "维度key2": 0.7
+            "维度名称": 0.3,
+            "维度名称2": 0.7
           }
         }
       `;
@@ -671,6 +1030,84 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
       </div>
 
       <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-200">
+        <h3 className="text-xl font-bold mb-8">AI 模型引擎配置</h3>
+        <div className="space-y-6">
+          <div className="flex gap-4 p-1 bg-slate-100 rounded-xl w-fit">
+            <button 
+              onClick={() => setEditingLLM({ ...editingLLM, provider: 'gemini' })}
+              className={cn(
+                "px-6 py-2 rounded-lg font-bold transition-all",
+                editingLLM.provider === 'gemini' ? "bg-white text-emerald-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
+              )}
+            >
+              Gemini (云端)
+            </button>
+            <button 
+              onClick={() => setEditingLLM({ ...editingLLM, provider: 'local' })}
+              className={cn(
+                "px-6 py-2 rounded-lg font-bold transition-all",
+                editingLLM.provider === 'local' ? "bg-white text-indigo-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
+              )}
+            >
+              本地大模型 (Ollama/LM Studio)
+            </button>
+          </div>
+
+          {editingLLM.provider === 'local' ? (
+            <div className="grid grid-cols-2 gap-6 p-6 bg-slate-50 rounded-2xl border border-slate-100">
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-700">API 地址</label>
+                <input 
+                  type="text"
+                  value={editingLLM.local_url}
+                  onChange={e => setEditingLLM({ ...editingLLM, local_url: e.target.value })}
+                  className="w-full px-4 py-2 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="http://localhost:11434/v1/chat/completions"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-700">模型名称</label>
+                <input 
+                  type="text"
+                  value={editingLLM.local_model}
+                  onChange={e => setEditingLLM({ ...editingLLM, local_model: e.target.value })}
+                  className="w-full px-4 py-2 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="llama3 / qwen2"
+                />
+              </div>
+              <div className="space-y-2 col-span-2">
+                <label className="text-sm font-bold text-slate-700">API Key (可选)</label>
+                <input 
+                  type="password"
+                  value={editingLLM.local_api_key}
+                  onChange={e => setEditingLLM({ ...editingLLM, local_api_key: e.target.value })}
+                  className="w-full px-4 py-2 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="如果本地服务需要鉴权请填写"
+                />
+              </div>
+              <div className="col-span-2">
+                <p className="text-xs text-slate-400">提示：本地模型需支持 OpenAI 兼容接口。Ollama 默认地址为 http://localhost:11434/v1/chat/completions</p>
+              </div>
+            </div>
+          ) : (
+            <div className="p-6 bg-emerald-50 rounded-2xl border border-emerald-100">
+              <p className="text-sm text-emerald-800 font-medium">当前正在使用 Google Gemini 3.0 Flash 引擎，提供极速且智能的评审体验。</p>
+            </div>
+          )}
+          
+          <div className="flex justify-end">
+            <button 
+              onClick={handleSaveConfig}
+              disabled={saving}
+              className="px-8 py-3 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 disabled:opacity-50 transition-all"
+            >
+              {saving ? '正在保存...' : '保存模型配置'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-200">
         <h3 className="text-xl font-bold mb-8">赛事阶段切换</h3>
         <div className="flex items-center justify-between p-6 bg-slate-50 rounded-2xl border border-slate-100">
           <div>
@@ -693,24 +1130,81 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
 
       <div className="grid grid-cols-2 gap-8">
         <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-200">
-          <h3 className="text-lg font-bold mb-4">打分权重 (决赛)</h3>
-          <div className="space-y-4">
-            {Object.entries(config.rules.weights).map(([key, val]: any) => (
-              <div key={key} className="flex justify-between items-center">
-                <span className="text-sm text-slate-600 capitalize">{key.replace('_', ' ')}</span>
-                <span className="font-bold text-slate-900">{val * 100}%</span>
+          <div className="flex justify-between items-center mb-6">
+            <h3 className="text-xl font-bold">打分权重配置</h3>
+            <button 
+              onClick={handleSaveConfig}
+              disabled={saving}
+              className="text-sm px-4 py-1.5 bg-slate-900 text-white rounded-lg hover:bg-slate-800 disabled:opacity-50"
+            >
+              {saving ? '保存中...' : '保存权重'}
+            </button>
+          </div>
+          <div className="space-y-6">
+            {Object.entries(editingWeights).map(([key, val]: any) => (
+              <div key={key} className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <label className="text-sm font-bold text-slate-700">{key}</label>
+                  <span className="text-xs font-mono text-emerald-600">{(val * 100).toFixed(0)}%</span>
+                </div>
+                <input 
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={val}
+                  onChange={(e) => setEditingWeights({ ...editingWeights, [key]: parseFloat(e.target.value) })}
+                  className="w-full h-2 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                />
               </div>
             ))}
+            <div className="pt-4 border-t border-slate-100">
+              <div className="flex justify-between items-center text-sm">
+                <span className="text-slate-500">权重总和</span>
+                <span className={cn(
+                  "font-bold",
+                  Math.abs((Object.values(editingWeights).reduce((a: any, b: any) => a + b, 0) as number) - 1) < 0.01 ? "text-emerald-600" : "text-rose-500"
+                )}>
+                  {((Object.values(editingWeights).reduce((a: any, b: any) => a + b, 0) as number) * 100).toFixed(0)}%
+                </span>
+              </div>
+            </div>
           </div>
         </div>
+
         <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-200">
-          <h3 className="text-lg font-bold mb-4">语音模板</h3>
-          <div className="space-y-4">
-            <div className="p-3 bg-slate-50 rounded-lg text-xs font-mono text-slate-500">
-              {config.voice_templates.commentary.substring(0, 60)}...
+          <div className="flex justify-between items-center mb-6">
+            <h3 className="text-xl font-bold">语音播报模板</h3>
+            <button 
+              onClick={handleSaveConfig}
+              disabled={saving}
+              className="text-sm px-4 py-1.5 bg-slate-900 text-white rounded-lg hover:bg-slate-800 disabled:opacity-50"
+            >
+              {saving ? '保存中...' : '保存模板'}
+            </button>
+          </div>
+          <div className="space-y-6">
+            <div className="space-y-2">
+              <label className="text-sm font-bold text-slate-700">点评语音模板</label>
+              <textarea 
+                value={editingTemplates.commentary}
+                onChange={(e) => setEditingTemplates({ ...editingTemplates, commentary: e.target.value })}
+                rows={4}
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm"
+                placeholder="可用变量: {team_name}, {case_name}, {content}"
+              />
+              <p className="text-[10px] text-slate-400">变量说明: {'{team_name}'} 团队名, {'{case_name}'} 案例名, {'{content}'} 点评内容</p>
             </div>
-            <div className="p-3 bg-slate-50 rounded-lg text-xs font-mono text-slate-500">
-              {config.voice_templates.score}
+            <div className="space-y-2">
+              <label className="text-sm font-bold text-slate-700">报分语音模板</label>
+              <textarea 
+                value={editingTemplates.score}
+                onChange={(e) => setEditingTemplates({ ...editingTemplates, score: e.target.value })}
+                rows={2}
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm"
+                placeholder="可用变量: {total_score}"
+              />
+              <p className="text-[10px] text-slate-400">变量说明: {'{total_score}'} 最终总分</p>
             </div>
           </div>
         </div>
@@ -719,19 +1213,45 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
   );
 };
 
-const LogsTab = () => {
+const LogsTab = ({ config, cases }: any) => {
   const [logs, setLogs] = useState([]);
 
   useEffect(() => {
     fetch('/api/logs').then(res => res.json()).then(setLogs);
   }, []);
 
+  const handleDownloadData = () => {
+    const data = {
+      config,
+      cases,
+      exportedAt: new Date().toISOString()
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `judge_system_export_${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="max-w-5xl mx-auto">
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="p-6 border-b border-slate-100 flex justify-between items-center">
           <h3 className="text-xl font-bold">操作日志追溯</h3>
-          <button className="text-sm text-emerald-600 font-bold hover:underline">导出为 Excel</button>
+          <div className="flex gap-4">
+            <button 
+              onClick={handleDownloadData}
+              className="text-sm px-4 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800 flex items-center gap-2"
+            >
+              <FileText size={16} />
+              导出全量数据
+            </button>
+            <button className="text-sm text-emerald-600 font-bold hover:underline">导出为 Excel</button>
+          </div>
         </div>
         <table className="w-full text-left">
           <thead className="bg-slate-50 text-slate-400 text-xs uppercase tracking-widest font-bold">
