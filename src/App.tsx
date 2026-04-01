@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Settings, Users, PlayCircle, FileText, Activity, ShieldAlert, CheckCircle2, Loader2, Volume2, Trophy, RefreshCw, Sparkles, Mic, Square, Radio } from 'lucide-react';
+import { Settings, Users, PlayCircle, FileText, Activity, ShieldAlert, CheckCircle2, Loader2, Volume2, Trophy, RefreshCw, Sparkles, Mic, Square, Radio, ChevronLeft, ChevronRight, Menu } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -10,6 +10,28 @@ import { GoogleGenAI, Modality } from "@google/genai";
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
+
+const extractJSON = (text: string) => {
+  try {
+    // 1. Try direct parse first
+    return JSON.parse(text);
+  } catch (e) {
+    // 2. Try to find JSON block
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start !== -1 && end !== -1 && end > start) {
+      const jsonStr = text.substring(start, end + 1);
+      try {
+        return JSON.parse(jsonStr);
+      } catch (e2) {
+        console.error("Failed to parse extracted JSON block:", jsonStr);
+        throw new Error("模型返回的 JSON 格式不正确，请重试。");
+      }
+    }
+    console.error("No JSON block found in text:", text);
+    throw new Error("模型返回内容不包含有效的 JSON 数据。");
+  }
+};
 
 async function pcmToWavBase64(pcmBase64: string, sampleRate: number = 24000): Promise<string> {
   try {
@@ -66,18 +88,24 @@ async function pcmToWavBase64(pcmBase64: string, sampleRate: number = 24000): Pr
 
 // --- Components ---
 
-const NavItem = ({ icon: Icon, label, active, onClick }: any) => (
+const NavItem = ({ icon: Icon, label, active, onClick, collapsed }: any) => (
   <button
     onClick={onClick}
     className={cn(
-      "flex items-center gap-3 px-6 py-4 transition-all duration-300 border-l-4",
+      "w-full flex items-center gap-3 px-4 py-3 transition-all duration-300 rounded-xl relative group",
       active 
-        ? "bg-emerald-50 text-emerald-700 border-emerald-500" 
-        : "text-slate-500 border-transparent hover:bg-slate-50"
+        ? "bg-blue-600 text-white shadow-lg shadow-blue-900/20" 
+        : "text-slate-400 hover:bg-slate-800 hover:text-white",
+      collapsed && "justify-center px-0"
     )}
   >
     <Icon size={20} />
-    <span className="font-medium">{label}</span>
+    {!collapsed && <span className="font-medium">{label}</span>}
+    {collapsed && (
+      <div className="absolute left-full ml-4 px-2 py-1 bg-slate-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 whitespace-nowrap">
+        {label}
+      </div>
+    )}
   </button>
 );
 
@@ -87,6 +115,40 @@ export default function App() {
   const [cases, setCases] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [playing, setPlaying] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const toggleSidebar = () => {
+    setIsSidebarCollapsed(!isSidebarCollapsed);
+  };
+
+  const playAudio = (url: string, type: string) => {
+    if (!url) return;
+    
+    if (playing === type) {
+      audioRef.current?.pause();
+      setPlaying(null);
+      return;
+    }
+
+    if (audioRef.current) {
+      audioRef.current.pause();
+    }
+
+    const audio = new Audio(`${url}?t=${Date.now()}`);
+    audioRef.current = audio;
+    setPlaying(type);
+
+    audio.onended = () => setPlaying(null);
+    audio.onerror = () => {
+      setPlaying(null);
+      alert("音频播放失败，请稍后重试");
+    };
+    audio.play().catch(e => {
+      console.error("Audio play error:", e);
+      setPlaying(null);
+    });
+  };
 
   const fetchWithRetry = async (url: string, options: any = {}, retries: number = 3) => {
     for (let i = 0; i < retries; i++) {
@@ -265,27 +327,7 @@ export default function App() {
   };
 
   // Robust JSON extraction
-  const extractJSON = (text: string) => {
-    try {
-      // 1. Try direct parse first
-      return JSON.parse(text);
-    } catch (e) {
-      // 2. Try to find JSON block
-      const start = text.indexOf('{');
-      const end = text.lastIndexOf('}');
-      if (start !== -1 && end !== -1 && end > start) {
-        const jsonStr = text.substring(start, end + 1);
-        try {
-          return JSON.parse(jsonStr);
-        } catch (e2) {
-          console.error("Failed to parse extracted JSON block:", jsonStr);
-          throw new Error("模型返回的 JSON 格式不正确，请重试。");
-        }
-      }
-      console.error("No JSON block found in text:", text);
-      throw new Error("模型返回内容不包含有效的 JSON 数据。");
-    }
-  };
+  // (Moved to top level)
 
   const handleProcess = async (id: string, demoPerf: string = "", defensePerf: string = "") => {
     setLoading(true);
@@ -516,111 +558,121 @@ export default function App() {
 
   return (
     <div className="h-screen bg-slate-50 flex font-sans overflow-hidden relative">
-      {/* Sidebar Toggle Button (Floating when collapsed) */}
-      {isSidebarCollapsed && (
-        <button 
-          onClick={() => setIsSidebarCollapsed(false)}
-          className="absolute top-6 left-6 z-50 p-2.5 bg-white rounded-xl border border-slate-200 shadow-lg text-emerald-600 hover:bg-slate-50 transition-all flex items-center gap-2 group"
-          title="展开侧边栏"
-        >
-          <Trophy size={20} />
-          <span className="text-xs font-bold opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">展开菜单</span>
-        </button>
-      )}
-
       {/* Sidebar */}
       <aside className={cn(
-        "bg-white border-r border-slate-200 flex flex-col shadow-sm transition-all duration-300 relative flex-shrink-0",
-        isSidebarCollapsed ? "w-0 -translate-x-full overflow-hidden" : "w-64 translate-x-0"
+        "bg-[#0D1425] text-white flex flex-col shadow-xl transition-all duration-300 relative flex-shrink-0 z-20",
+        isSidebarCollapsed ? "w-20" : "w-64"
       )}>
-        <button 
-          onClick={() => setIsSidebarCollapsed(true)}
-          className="absolute top-6 right-4 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-lg transition-colors z-10"
-          title="收起侧边栏"
-        >
-          <Square size={16} className="rotate-90" />
-        </button>
-
-        <div className="p-8 border-bottom border-slate-100">
-          <div className="flex items-center gap-2 text-emerald-600 mb-2">
-            <Trophy size={32} strokeWidth={2.5} />
-            <h1 className="text-2xl font-bold tracking-tight">智评系统</h1>
-          </div>
-          <p className="text-xs text-slate-400 uppercase tracking-widest font-semibold">AI Judge System v1.0</p>
+        <div className={cn("p-6 mb-4 flex items-center", isSidebarCollapsed ? "justify-center" : "justify-between")}>
+          {!isSidebarCollapsed && <h1 className="text-2xl font-bold text-white tracking-tight">旗评系统</h1>}
+          <button 
+            onClick={toggleSidebar}
+            className="p-2 hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-white"
+            title={isSidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
+          >
+            {isSidebarCollapsed ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}
+          </button>
         </div>
 
-        <nav className="flex-1 py-4">
-          <NavItem icon={PlayCircle} label="现场评委席" active={activeTab === 'judge'} onClick={() => setActiveTab('judge')} />
-          <NavItem icon={Users} label="案例接入" active={activeTab === 'cases'} onClick={() => setActiveTab('cases')} />
-          <NavItem icon={Settings} label="赛前配置" active={activeTab === 'config'} onClick={() => setActiveTab('config')} />
-          <NavItem icon={Activity} label="日志追溯" active={activeTab === 'logs'} onClick={() => setActiveTab('logs')} />
+        <nav className="flex-1 space-y-2 px-3">
+          <NavItem icon={PlayCircle} label="现场评委席" active={activeTab === 'judge'} onClick={() => setActiveTab('judge')} collapsed={isSidebarCollapsed} />
+          <NavItem icon={Users} label="案例接入" active={activeTab === 'cases'} onClick={() => setActiveTab('cases')} collapsed={isSidebarCollapsed} />
+          <NavItem icon={Settings} label="赛前配置" active={activeTab === 'config'} onClick={() => setActiveTab('config')} collapsed={isSidebarCollapsed} />
+          <NavItem icon={Activity} label="日志追溯" active={activeTab === 'logs'} onClick={() => setActiveTab('logs')} collapsed={isSidebarCollapsed} />
         </nav>
-
-        <div className="p-6 border-t border-slate-100">
-          <div className="bg-slate-900 rounded-xl p-4 text-white">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
-              <span className="text-xs font-medium opacity-70">系统状态</span>
+        
+        <div className="p-6 border-t border-slate-800">
+          {!isSidebarCollapsed && (
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-blue-600 shadow-lg">
+                <img 
+                  src="https://images.unsplash.com/photo-1578632292335-df3abbb0d586?q=80&w=1000&auto=format&fit=crop" 
+                  alt="Judge Avatar" 
+                  className="w-full h-full object-cover"
+                  referrerPolicy="no-referrer"
+                />
+              </div>
+              <div>
+                <p className="text-xs font-bold">当前评委</p>
+                <p className="text-[10px] text-slate-400">智能体大赛专席</p>
+              </div>
             </div>
-            <p className="text-sm font-semibold">运行中 (正常)</p>
-          </div>
+          )}
+          {isSidebarCollapsed && (
+            <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-blue-600 shadow-lg mx-auto">
+              <img 
+                src="https://images.unsplash.com/photo-1578632292335-df3abbb0d586?q=80&w=1000&auto=format&fit=crop" 
+                alt="Judge Avatar" 
+                className="w-full h-full object-cover"
+                referrerPolicy="no-referrer"
+              />
+            </div>
+          )}
         </div>
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto p-10">
-        <AnimatePresence mode="wait">
-          {activeTab === 'judge' && (
-            <motion.div
-              key="judge"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="space-y-8"
-            >
-              <div className="flex justify-between items-end">
-                <div>
-                  <h2 className="text-3xl font-bold text-slate-900">现场评委席</h2>
-                  <p className="text-slate-500 mt-1">当前阶段：{config?.stage === 'final' ? '决赛 (点评+打分)' : '复赛 (仅点评)'}</p>
-                </div>
-                <div className="flex gap-4">
-                  <div className="px-4 py-2 bg-white rounded-lg border border-slate-200 shadow-sm flex items-center gap-2">
-                    <CheckCircle2 size={16} className="text-emerald-500" />
-                    <span className="text-sm font-medium">已完成: {cases.filter(c => c.status === 'completed').length}</span>
-                  </div>
-                  <div className="px-4 py-2 bg-white rounded-lg border border-slate-200 shadow-sm flex items-center gap-2">
-                    <Loader2 size={16} className="text-amber-500 animate-spin" />
-                    <span className="text-sm font-medium">待处理: {cases.filter(c => c.status === 'pending').length}</span>
-                  </div>
-                </div>
-              </div>
+      <main className="flex-1 overflow-y-auto flex flex-col bg-white">
+        {/* Header */}
+        <header className="bg-white border-b border-slate-100 px-8 py-4 flex justify-between items-center sticky top-0 z-10 shadow-sm">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-slate-500 text-sm">
+              <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse" />
+              <span>当前阶段：</span>
+              <span className="font-bold text-slate-900">{config?.stage === 'final' ? '决赛 (点评+打分)' : '复赛 (仅点评)'}</span>
+            </div>
+          </div>
+          <div className="flex gap-4">
+            <div className="px-3 py-1.5 bg-emerald-50 rounded-lg border border-emerald-100 flex items-center gap-2">
+              <CheckCircle2 size={14} className="text-emerald-500" />
+              <span className="text-xs font-bold text-emerald-700">已完成: {cases.filter(c => c.status === 'completed').length}</span>
+            </div>
+            <div className="px-3 py-1.5 bg-amber-50 rounded-lg border border-amber-100 flex items-center gap-2">
+              <Loader2 size={14} className="text-amber-500 animate-spin" />
+              <span className="text-xs font-bold text-amber-700">待处理: {cases.filter(c => c.status === 'pending').length}</span>
+            </div>
+          </div>
+        </header>
 
-              <div className="grid gap-6">
-                {cases.length === 0 ? (
-                  <div className="bg-white rounded-2xl border-2 border-dashed border-slate-200 p-20 text-center">
-                    <Users size={48} className="mx-auto text-slate-300 mb-4" />
-                    <p className="text-slate-500">暂无案例数据，请先在“案例接入”模块录入</p>
-                  </div>
-                ) : (
-                  cases.map((item) => (
-                    <CaseCard 
-                      key={item.id} 
-                      item={item} 
-                      onProcess={(demo: string, defense: string) => handleProcess(item.id, demo, defense)} 
-                      loading={loading}
-                      stage={config?.stage}
-                      callLLM={callLLM}
-                    />
-                  ))
-                )}
-              </div>
-            </motion.div>
-          )}
+        <div className="p-8">
+          <AnimatePresence mode="wait">
+            {activeTab === 'judge' && (
+              <motion.div
+                key="judge"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="max-w-6xl mx-auto space-y-6"
+              >
+                <div className="grid gap-6">
+                  {cases.length === 0 ? (
+                    <div className="bg-white rounded-2xl border-2 border-dashed border-slate-200 p-20 text-center">
+                      <Users size={48} className="mx-auto text-slate-300 mb-4" />
+                      <p className="text-slate-500">暂无案例数据，请先在“案例接入”模块录入</p>
+                    </div>
+                  ) : (
+                    cases.map((item) => (
+                      <CaseCard 
+                        key={item.id} 
+                        item={item} 
+                        onProcess={(demo: string, defense: string) => handleProcess(item.id, demo, defense)} 
+                        loading={loading}
+                        stage={config?.stage}
+                        callLLM={callLLM}
+                        playAudio={playAudio}
+                        playing={playing}
+                      />
+                    ))
+                  )}
+                </div>
+              </motion.div>
+            )}
 
-          {activeTab === 'cases' && <CasesTab onUpdate={fetchData} cases={cases} />}
-          {activeTab === 'config' && <ConfigTab config={config} onUpdate={fetchData} callLLM={callLLM} />}
-          {activeTab === 'logs' && <LogsTab config={config} cases={cases} />}
-        </AnimatePresence>
+            {activeTab === 'cases' && <CasesTab onUpdate={fetchData} cases={cases} />}
+            {activeTab === 'config' && <ConfigTab config={config} onUpdate={fetchData} callLLM={callLLM} />}
+            {activeTab === 'logs' && <LogsTab config={config} cases={cases} />}
+          </AnimatePresence>
+        </div>
       </main>
     </div>
   );
@@ -628,8 +680,7 @@ export default function App() {
 
 // --- Sub-components ---
 
-const CaseCard = ({ item, onProcess, loading, stage, callLLM }: any) => {
-  const [playing, setPlaying] = useState<string | null>(null);
+const CaseCard = ({ item, onProcess, loading, stage, callLLM, playAudio, playing }: any) => {
   const [demoPerf, setDemoPerf] = useState("");
   const [defensePerf, setDefensePerf] = useState("");
   
@@ -676,7 +727,6 @@ const CaseCard = ({ item, onProcess, loading, stage, callLLM }: any) => {
   const handleLiveSummarization = async (blob: Blob) => {
     setIsSummarizing(true);
     try {
-      // Convert blob to base64
       const reader = new FileReader();
       const base64Promise = new Promise<string>((resolve) => {
         reader.onloadend = () => {
@@ -699,7 +749,7 @@ const CaseCard = ({ item, onProcess, loading, stage, callLLM }: any) => {
 
       const ai = new GoogleGenAI({ apiKey: (process as any).env.GEMINI_API_KEY });
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-3-flash-preview",
         contents: [
           { text: prompt },
           {
@@ -712,7 +762,7 @@ const CaseCard = ({ item, onProcess, loading, stage, callLLM }: any) => {
         config: { responseMimeType: "application/json" }
       });
 
-      const result = JSON.parse(response.text || "{}");
+      const result = extractJSON(response.text || "{}");
       if (result.demo_summary) setDemoPerf(result.demo_summary);
       if (result.defense_summary) setDefensePerf(result.defense_summary);
       
@@ -724,235 +774,185 @@ const CaseCard = ({ item, onProcess, loading, stage, callLLM }: any) => {
     }
   };
 
-  const playAudio = (url: string, type: string) => {
-    if (!url) {
-      alert("暂无语音文件，请先点击“开始 AI 智能评测”生成。");
-      return;
-    }
-    
-    console.log(`Attempting to play audio from: ${url}`);
-    
-    // 添加时间戳防止浏览器缓存旧的错误文件
-    const audio = new Audio(`${url}?t=${Date.now()}`);
-    setPlaying(type);
-    
-    audio.oncanplaythrough = () => {
-      console.log("Audio can play through");
-      audio.play().catch(e => {
-        console.error("Audio play error:", e);
-        setPlaying(null);
-        alert(`语音播放失败: ${e.message || '浏览器限制或文件损坏'}`);
-      });
-    };
-
-    audio.onended = () => {
-      console.log("Audio playback ended");
-      setPlaying(null);
-    };
-
-    audio.onerror = (e) => {
-      console.error("Audio loading error:", e, audio.error);
-      setPlaying(null);
-      let msg = "语音资源加载失败";
-      if (audio.error) {
-        switch (audio.error.code) {
-          case 1: msg += " (加载被中止)"; break;
-          case 2: msg += " (网络错误)"; break;
-          case 3: msg += " (解码错误)"; break;
-          case 4: msg += " (资源不支持)"; break;
-        }
-      }
-      alert(`${msg}，请检查网络或重新生成。`);
-    };
-
-    audio.load();
-  };
-
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden hover:shadow-md transition-shadow">
       <div className="p-6 flex justify-between items-start">
         <div className="flex gap-4">
-          <div className="w-12 h-12 bg-emerald-100 rounded-xl flex items-center justify-center text-emerald-600 font-bold text-xl">
-            {item.team_name[0]}
+          <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center text-white font-bold text-xl">
+            {item.team_name[0] === 'A' ? '电' : item.team_name[0]}
           </div>
           <div>
             <h3 className="text-xl font-bold text-slate-900">{item.case_name}</h3>
-            <p className="text-slate-500 text-sm">{item.team_name} · 团队 ID: {item.id}</p>
+            <p className="text-slate-400 text-sm">{item.team_name} · 团队 ID: {item.id}</p>
           </div>
         </div>
         <div className={cn(
-          "px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider",
-          item.status === 'completed' ? "bg-emerald-100 text-emerald-700" : 
-          item.status === 'fallback' ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-500"
+          "px-3 py-1 rounded-full text-xs font-bold",
+          item.status === 'completed' ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-500"
         )}>
-          {item.status === 'completed' ? '已生成' : item.status === 'fallback' ? '兜底模式' : '待处理'}
+          {item.status === 'completed' ? '已生成' : '待处理'}
         </div>
       </div>
 
-      <div className="px-6 pb-6">
-        <div className="bg-slate-50 rounded-xl p-4 mb-6">
-          <p className="text-sm text-slate-600 line-clamp-2 italic">“{item.content}”</p>
-        </div>
-
-        {/* Live Perception Section */}
-        {item.status !== 'completed' && item.status !== 'fallback' && (
-          <div className="mb-6 p-4 bg-emerald-50/50 border border-emerald-100 rounded-2xl">
-            <div className="flex justify-between items-center mb-4">
-              <div className="flex items-center gap-2">
-                <div className={cn(
-                  "w-2 h-2 rounded-full",
-                  isListening ? "bg-red-500 animate-pulse" : "bg-slate-300"
-                )} />
-                <span className="text-sm font-bold text-slate-700">现场智能感知助手</span>
-              </div>
-              <button
-                onClick={isListening ? stopListening : startListening}
-                disabled={isSummarizing}
-                className={cn(
-                  "px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-2 transition-all",
-                  isListening 
-                    ? "bg-red-100 text-red-600 hover:bg-red-200" 
-                    : "bg-emerald-600 text-white hover:bg-emerald-700"
-                )}
+      <div className="px-6 pb-6 space-y-6">
+        {/* Action Buttons */}
+        {(item.status === 'completed' || item.status === 'fallback') && (
+          <div className="grid grid-cols-2 gap-4">
+            <button 
+              onClick={() => playAudio(item.audio_comment, 'comment')}
+              disabled={playing !== null}
+              className="flex items-center justify-center gap-2 py-4 bg-[#3B71ED] text-white rounded-xl font-bold hover:bg-blue-700 transition-colors disabled:opacity-50"
+            >
+              {playing === 'comment' ? <Loader2 className="animate-spin" size={20} /> : null}
+              一键播放点评
+            </button>
+            {stage === 'final' && (
+              <button 
+                onClick={() => playAudio(item.audio_score, 'score')}
+                disabled={playing !== null}
+                className="flex items-center justify-center gap-2 py-4 bg-[#EBB04F] text-white rounded-xl font-bold hover:bg-orange-600 transition-colors disabled:opacity-50"
               >
-                {isSummarizing ? (
-                  <Loader2 className="animate-spin" size={14} />
-                ) : isListening ? (
-                  <Square size={14} fill="currentColor" />
-                ) : (
-                  <Mic size={14} />
-                )}
-                {isSummarizing ? "正在智能总结现场表现..." : isListening ? "停止监听并总结" : "开启现场监听"}
+                {playing === 'score' ? <Loader2 className="animate-spin" size={20} /> : null}
+                一键播放报分
               </button>
-            </div>
-            
-            {isListening && (
-              <div className="flex items-center gap-3 py-2 px-3 bg-white rounded-xl border border-emerald-100 mb-4">
-                <Radio className="text-red-500 animate-pulse" size={16} />
-                <span className="text-xs text-slate-500 font-medium">正在实时感知现场演示与答辩对话...</span>
-              </div>
             )}
-
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1">
-                  作品演示表现 (AI 自动总结)
-                </label>
-                <textarea 
-                  value={demoPerf}
-                  onChange={(e) => setDemoPerf(e.target.value)}
-                  placeholder="开启监听后自动填充..."
-                  className="w-full h-24 px-3 py-2 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none resize-none text-sm transition-all"
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1">
-                  现场答辩表现 (AI 自动总结)
-                </label>
-                <textarea 
-                  value={defensePerf}
-                  onChange={(e) => setDefensePerf(e.target.value)}
-                  placeholder="开启监听后自动填充..."
-                  className="w-full h-24 px-3 py-2 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none resize-none text-sm transition-all"
-                />
-              </div>
-            </div>
           </div>
         )}
 
         {item.status === 'completed' || item.status === 'fallback' ? (
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <button 
-                onClick={() => playAudio(item.audio_comment, 'comment')}
-                disabled={playing !== null}
-                className="flex items-center justify-center gap-2 py-3 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-colors disabled:opacity-50"
-              >
-                {playing === 'comment' ? <Loader2 className="animate-spin" size={20} /> : <Volume2 size={20} />}
-                一键播放点评
-              </button>
-              {stage === 'final' && (
-                <button 
-                  onClick={() => playAudio(item.audio_score, 'score')}
-                  disabled={playing !== null}
-                  className="flex items-center justify-center gap-2 py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-colors disabled:opacity-50"
-                >
-                  {playing === 'score' ? <Loader2 className="animate-spin" size={20} /> : <Trophy size={20} />}
-                  一键播放报分
-                </button>
-              )}
-            </div>
+          <div className="space-y-6">
+            <h4 className="text-3xl font-bold text-slate-900 flex items-center gap-2">
+              <Sparkles className="text-blue-600" /> AI 评委打分
+            </h4>
             
-            <div className="p-4 border border-slate-100 rounded-xl bg-white">
-              <div className="flex justify-between items-center mb-4">
-                <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">AI 评语摘要</span>
-                {stage === 'final' && (
-                  <div className="text-2xl font-black text-emerald-600">{item.result?.total_score} <span className="text-sm font-normal text-slate-400">分</span></div>
-                )}
+            <div className="relative flex items-end gap-8 bg-slate-50 p-8 rounded-[40px] border border-slate-100">
+              {/* Avatar */}
+              <div className="flex-shrink-0 w-72 h-96 overflow-hidden rounded-3xl shadow-2xl border-4 border-white relative group">
+                <img 
+                  src="https://images.unsplash.com/photo-1578632292335-df3abbb0d586?q=80&w=1000&auto=format&fit=crop" 
+                  alt="Judge Avatar" 
+                  className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                  referrerPolicy="no-referrer"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-6">
+                  <p className="text-white text-sm font-bold">AI 智能评委</p>
+                </div>
               </div>
-              
-              {stage === 'final' && item.result?.scores && (
-                <div className="grid grid-cols-2 gap-2 mb-4 pb-4 border-b border-slate-50">
-                  {Object.entries(item.result.scores).map(([k, v]: any) => (
-                    <div key={k} className="flex justify-between items-center bg-slate-50 px-3 py-1.5 rounded-lg">
-                      <span className="text-[10px] text-slate-500 uppercase font-bold">{k.replace('_', ' ')}</span>
-                      <span className="text-xs font-black text-slate-700">{v}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
 
-              <p className="text-sm text-slate-700 leading-relaxed mb-3">{item.result?.pure_comment}</p>
-              {item.result?.score_reason && (
-                <div className="mt-2 p-3 bg-amber-50 rounded-lg border border-amber-100">
-                  <p className="text-[10px] font-bold text-amber-600 uppercase mb-1">打分依据</p>
-                  <p className="text-xs text-amber-800 leading-relaxed">{item.result.score_reason}</p>
+              {/* Score Box */}
+              <div className="flex-1 bg-[#0D1425] rounded-[40px] p-10 text-white min-h-[380px] relative overflow-hidden shadow-2xl border border-slate-800">
+                {/* Background Decoration */}
+                <div className="absolute top-0 right-0 w-64 h-64 bg-blue-600/10 rounded-full blur-3xl -mr-32 -mt-32" />
+                <div className="absolute bottom-0 left-0 w-48 h-48 bg-blue-900/20 rounded-full blur-3xl -ml-24 -mb-24" />
+                
+                <div className="relative z-10">
+                  <div className="flex justify-between items-start mb-10">
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-9xl font-bold text-[#EBB04F] tracking-tighter drop-shadow-[0_0_20px_rgba(235,176,79,0.3)]">
+                        {item.result?.total_score || 0}
+                      </span>
+                      <span className="text-2xl text-slate-400 font-bold">分</span>
+                    </div>
+                    
+                    {stage === 'final' && item.result?.scores && (
+                      <div className="grid grid-cols-1 gap-y-3 text-right">
+                        {Object.entries(item.result.scores).map(([k, v]: any) => (
+                          <div key={k} className="flex items-center justify-end gap-4 group">
+                            <span className="text-slate-500 text-sm group-hover:text-slate-300 transition-colors">{k}</span>
+                            <span className="text-blue-400 text-3xl font-bold w-12 drop-shadow-[0_0_10px_rgba(96,165,250,0.3)]">{v}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-6">
+                    <div className="flex items-center gap-2 text-[#EBB04F]">
+                      <FileText size={20} />
+                      <h5 className="text-2xl font-bold">AI 评语</h5>
+                    </div>
+                    <p className="text-slate-300 leading-relaxed text-xl line-clamp-5 font-light italic">
+                      “{item.result?.pure_comment}”
+                    </p>
+                  </div>
                 </div>
-              )}
+              </div>
             </div>
 
-            {(item.status === 'fallback' || item.status === 'completed') && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase">更新演示表现</label>
-                    <input 
-                      value={demoPerf}
-                      onChange={(e) => setDemoPerf(e.target.value)}
-                      placeholder="补充演示细节..."
-                      className="w-full px-3 py-1.5 text-xs bg-white border border-slate-100 rounded-lg outline-none focus:border-emerald-500"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase">更新答辩表现</label>
-                    <input 
-                      value={defensePerf}
-                      onChange={(e) => setDefensePerf(e.target.value)}
-                      placeholder="补充答辩细节..."
-                      className="w-full px-3 py-1.5 text-xs bg-white border border-slate-100 rounded-lg outline-none focus:border-indigo-500"
-                    />
-                  </div>
-                </div>
-                <button 
-                  onClick={() => onProcess(demoPerf, defensePerf)}
-                  disabled={loading}
-                  className="w-full py-3 border-2 border-dashed border-slate-200 text-slate-400 rounded-xl font-bold hover:border-emerald-500 hover:text-emerald-500 transition-all flex items-center justify-center gap-2"
-                >
-                  {loading ? <Loader2 className="animate-spin" size={20} /> : <RefreshCw size={18} />}
-                  {item.status === 'completed' ? '重新生成 AI 评语' : '重新尝试 AI 智能评测'}
-                </button>
+            {/* Re-process section */}
+            <div className="pt-6 border-t border-slate-100 flex gap-4">
+              <div className="flex-1 space-y-2">
+                <input 
+                  value={demoPerf}
+                  onChange={(e) => setDemoPerf(e.target.value)}
+                  placeholder="补充演示细节..."
+                  className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:border-blue-500 text-sm"
+                />
               </div>
-            )}
+              <div className="flex-1 space-y-2">
+                <input 
+                  value={defensePerf}
+                  onChange={(e) => setDefensePerf(e.target.value)}
+                  placeholder="补充答辩细节..."
+                  className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:border-blue-500 text-sm"
+                />
+              </div>
+              <button 
+                onClick={() => onProcess(demoPerf, defensePerf)}
+                disabled={loading}
+                className="px-6 py-2 bg-slate-100 text-slate-600 rounded-lg font-bold hover:bg-slate-200 transition-all flex items-center gap-2 whitespace-nowrap"
+              >
+                {loading ? <Loader2 className="animate-spin" size={16} /> : <RefreshCw size={16} />}
+                重新生成
+              </button>
+            </div>
           </div>
         ) : (
-          <button 
-            onClick={() => onProcess(demoPerf, defensePerf)}
-            disabled={loading}
-            className="w-full py-4 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 transition-colors flex items-center justify-center gap-2"
-          >
-            {loading ? <Loader2 className="animate-spin" size={20} /> : <PlayCircle size={20} />}
-            开始 AI 智能评测
-          </button>
+          <div className="space-y-6">
+            {/* Perception Assistant */}
+            <div className="p-6 bg-blue-50 rounded-2xl border border-blue-100">
+              <div className="flex justify-between items-center mb-4">
+                <div className="flex items-center gap-2">
+                  <div className={cn("w-2 h-2 rounded-full", isListening ? "bg-red-500 animate-pulse" : "bg-slate-300")} />
+                  <span className="font-bold text-slate-700">现场智能感知助手</span>
+                </div>
+                <button
+                  onClick={isListening ? stopListening : startListening}
+                  disabled={isSummarizing}
+                  className={cn(
+                    "px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-2 transition-all",
+                    isListening ? "bg-red-500 text-white" : "bg-blue-600 text-white"
+                  )}
+                >
+                  {isSummarizing ? <Loader2 className="animate-spin" size={14} /> : isListening ? <Square size={14} fill="currentColor" /> : <Mic size={14} />}
+                  {isSummarizing ? "正在总结..." : isListening ? "停止并总结" : "开启现场监听"}
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <textarea 
+                  value={demoPerf}
+                  onChange={(e) => setDemoPerf(e.target.value)}
+                  placeholder="作品演示表现..."
+                  className="w-full h-24 p-3 bg-white border border-slate-200 rounded-xl text-sm resize-none"
+                />
+                <textarea 
+                  value={defensePerf}
+                  onChange={(e) => setDefensePerf(e.target.value)}
+                  placeholder="现场答辩表现..."
+                  className="w-full h-24 p-3 bg-white border border-slate-200 rounded-xl text-sm resize-none"
+                />
+              </div>
+            </div>
+
+            <button 
+              onClick={() => onProcess(demoPerf, defensePerf)}
+              disabled={loading}
+              className="w-full py-4 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
+            >
+              {loading ? <Loader2 className="animate-spin" size={20} /> : <PlayCircle size={20} />}
+              开始 AI 智能评测
+            </button>
+          </div>
         )}
       </div>
     </div>
@@ -976,8 +976,8 @@ const CasesTab = ({ onUpdate, cases }: any) => {
   return (
     <div className="max-w-4xl mx-auto space-y-10">
       <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-200">
-        <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
-          <FileText className="text-emerald-500" /> 录入新案例
+        <h3 className="text-xl font-bold mb-6 flex items-center gap-2 text-slate-800">
+          <FileText className="text-blue-600" /> 录入新案例
         </h3>
         <form onSubmit={handleSubmit} className="space-y-6">
           <div className="grid grid-cols-2 gap-6">
@@ -985,7 +985,7 @@ const CasesTab = ({ onUpdate, cases }: any) => {
               <label className="text-sm font-bold text-slate-700">团队名称</label>
               <input 
                 required
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none"
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
                 value={formData.team_name}
                 onChange={e => setFormData({ ...formData, team_name: e.target.value })}
                 placeholder="如：极客先锋队"
@@ -995,7 +995,7 @@ const CasesTab = ({ onUpdate, cases }: any) => {
               <label className="text-sm font-bold text-slate-700">案例名称</label>
               <input 
                 required
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none"
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
                 value={formData.case_name}
                 onChange={e => setFormData({ ...formData, case_name: e.target.value })}
                 placeholder="如：智能代码助手"
@@ -1007,20 +1007,20 @@ const CasesTab = ({ onUpdate, cases }: any) => {
             <textarea 
               required
               rows={6}
-              className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none"
+              className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
               value={formData.content}
               onChange={e => setFormData({ ...formData, content: e.target.value })}
               placeholder="请输入项目背景、技术架构、创新点及应用价值..."
             />
           </div>
-          <button type="submit" className="w-full py-4 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all">
+          <button type="submit" className="w-full py-4 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all">
             确认录入案例
           </button>
         </form>
       </div>
 
       <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-200">
-        <h3 className="text-xl font-bold mb-6">已录入列表 ({cases.length})</h3>
+        <h3 className="text-xl font-bold mb-6 text-slate-800">已录入列表 ({cases.length})</h3>
         <div className="divide-y divide-slate-100">
           {cases.map((c: any) => (
             <div key={c.id} className="py-4 flex justify-between items-center">
@@ -1070,9 +1070,8 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
   const handleSaveConfig = async () => {
     setSaving(true);
     try {
-      // Ensure weights sum to 1.0 (approximately)
       const sum = Object.values(editingWeights).reduce((a: any, b: any) => a + b, 0) as number;
-      if (Math.abs(sum - 1) > 0.05) { // Allow some floating point variance
+      if (Math.abs(sum - 1) > 0.05) {
         if (!confirm(`当前权重总和为 ${(sum * 100).toFixed(1)}%，建议总和为 100%。是否继续保存？`)) {
           setSaving(false);
           return;
@@ -1127,7 +1126,6 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
       `;
 
       const text = await callLLM(prompt);
-      
       const cleanedText = text.replace(/```json/g, "").replace(/```/g, "").trim();
       const result = JSON.parse(cleanedText);
 
@@ -1167,7 +1165,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
   return (
     <div className="max-w-4xl mx-auto space-y-8">
       <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-200">
-        <h3 className="text-xl font-bold mb-6">AI 评分标准提取</h3>
+        <h3 className="text-xl font-bold mb-6 text-slate-800">AI 评分标准提取</h3>
         <div className="space-y-4">
           <p className="text-sm text-slate-500">
             你可以直接粘贴一段文字描述（例如：“技术创新占40%，商业价值30%，现场演示20%，文档完整性10%”），AI 将自动解析并构建评分规则。
@@ -1176,7 +1174,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
             value={standardText}
             onChange={(e) => setStandardText(e.target.value)}
             placeholder="在此输入评分标准描述..."
-            className="w-full h-32 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none resize-none text-sm"
+            className="w-full h-32 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none resize-none text-sm"
           />
           <div className="flex justify-end">
             <button 
@@ -1184,7 +1182,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
               disabled={extracting}
               className={cn(
                 "px-6 py-2 rounded-xl font-bold flex items-center gap-2 transition-all",
-                extracting ? "bg-slate-100 text-slate-400 cursor-not-allowed" : "bg-emerald-600 text-white hover:bg-emerald-700"
+                extracting ? "bg-slate-100 text-slate-400 cursor-not-allowed" : "bg-blue-600 text-white hover:bg-blue-700"
               )}
             >
               {extracting ? (
@@ -1204,14 +1202,14 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
       </div>
 
       <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-200">
-        <h3 className="text-xl font-bold mb-8">AI 模型引擎配置</h3>
+        <h3 className="text-xl font-bold mb-8 text-slate-800">AI 模型引擎配置</h3>
         <div className="space-y-6">
           <div className="flex gap-4 p-1 bg-slate-100 rounded-xl w-fit">
             <button 
               onClick={() => setEditingLLM({ ...editingLLM, provider: 'gemini' })}
               className={cn(
                 "px-6 py-2 rounded-lg font-bold transition-all",
-                editingLLM.provider === 'gemini' ? "bg-white text-emerald-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                editingLLM.provider === 'gemini' ? "bg-white text-blue-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
               )}
             >
               Gemini (云端)
@@ -1220,7 +1218,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
               onClick={() => setEditingLLM({ ...editingLLM, provider: 'local' })}
               className={cn(
                 "px-6 py-2 rounded-lg font-bold transition-all",
-                editingLLM.provider === 'local' ? "bg-white text-indigo-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                editingLLM.provider === 'local' ? "bg-white text-blue-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
               )}
             >
               本地大模型 (Ollama/LM Studio)
@@ -1235,7 +1233,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
                   type="text"
                   value={editingLLM.local_url}
                   onChange={e => setEditingLLM({ ...editingLLM, local_url: e.target.value })}
-                  className="w-full px-4 py-2 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full px-4 py-2 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
                   placeholder="http://localhost:11434/v1/chat/completions"
                 />
               </div>
@@ -1245,7 +1243,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
                   type="text"
                   value={editingLLM.local_model}
                   onChange={e => setEditingLLM({ ...editingLLM, local_model: e.target.value })}
-                  className="w-full px-4 py-2 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full px-4 py-2 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
                   placeholder="llama3 / qwen2"
                 />
               </div>
@@ -1255,7 +1253,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
                   type="password"
                   value={editingLLM.local_api_key}
                   onChange={e => setEditingLLM({ ...editingLLM, local_api_key: e.target.value })}
-                  className="w-full px-4 py-2 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full px-4 py-2 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
                   placeholder="如果本地服务需要鉴权请填写"
                 />
               </div>
@@ -1265,17 +1263,14 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
                   type="text"
                   value={editingLLM.local_tts_model || ""}
                   onChange={e => setEditingLLM({ ...editingLLM, local_tts_model: e.target.value })}
-                  className="w-full px-4 py-2 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full px-4 py-2 bg-white border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
                   placeholder="例如: qwen-tts / cosyvoice"
                 />
               </div>
-              <div className="col-span-2">
-                <p className="text-xs text-slate-400">提示：本地模型需支持 OpenAI 兼容接口。Ollama 默认地址为 http://localhost:11434/v1/chat/completions</p>
-              </div>
             </div>
           ) : (
-            <div className="p-6 bg-emerald-50 rounded-2xl border border-emerald-100">
-              <p className="text-sm text-emerald-800 font-medium">当前正在使用 Google Gemini 3.0 Flash 引擎，提供极速且智能的评审体验。</p>
+            <div className="p-6 bg-blue-50 rounded-2xl border border-blue-100">
+              <p className="text-sm text-blue-800 font-medium">当前正在使用 Google Gemini 引擎，提供极速且智能的评审体验。</p>
             </div>
           )}
           
@@ -1292,7 +1287,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
       </div>
 
       <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-200">
-        <h3 className="text-xl font-bold mb-8">赛事阶段切换</h3>
+        <h3 className="text-xl font-bold mb-8 text-slate-800">赛事阶段切换</h3>
         <div className="flex items-center justify-between p-6 bg-slate-50 rounded-2xl border border-slate-100">
           <div>
             <p className="text-lg font-bold text-slate-900">
@@ -1304,7 +1299,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
             onClick={handleToggleStage}
             className={cn(
               "px-8 py-3 rounded-xl font-bold transition-all",
-              config.stage === 'final' ? "bg-indigo-600 text-white" : "bg-emerald-600 text-white"
+              config.stage === 'final' ? "bg-blue-600 text-white" : "bg-blue-600 text-white"
             )}
           >
             切换到 {config.stage === 'final' ? '复赛' : '决赛'}
@@ -1315,7 +1310,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
       <div className="grid grid-cols-2 gap-8">
         <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-200">
           <div className="flex justify-between items-center mb-6">
-            <h3 className="text-xl font-bold">打分权重配置</h3>
+            <h3 className="text-xl font-bold text-slate-800">打分权重配置</h3>
             <button 
               onClick={handleSaveConfig}
               disabled={saving}
@@ -1329,7 +1324,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
               <div key={key} className="space-y-2">
                 <div className="flex justify-between items-center">
                   <label className="text-sm font-bold text-slate-700">{key}</label>
-                  <span className="text-xs font-mono text-emerald-600">{(val * 100).toFixed(0)}%</span>
+                  <span className="text-xs font-mono text-blue-600">{(val * 100).toFixed(0)}%</span>
                 </div>
                 <input 
                   type="range"
@@ -1338,7 +1333,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
                   step="0.05"
                   value={val}
                   onChange={(e) => setEditingWeights({ ...editingWeights, [key]: parseFloat(e.target.value) })}
-                  className="w-full h-2 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                  className="w-full h-2 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-blue-500"
                 />
               </div>
             ))}
@@ -1347,7 +1342,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
                 <span className="text-slate-500">权重总和</span>
                 <span className={cn(
                   "font-bold",
-                  Math.abs((Object.values(editingWeights).reduce((a: any, b: any) => a + b, 0) as number) - 1) < 0.01 ? "text-emerald-600" : "text-rose-500"
+                  Math.abs((Object.values(editingWeights).reduce((a: any, b: any) => a + b, 0) as number) - 1) < 0.01 ? "text-blue-600" : "text-rose-500"
                 )}>
                   {((Object.values(editingWeights).reduce((a: any, b: any) => a + b, 0) as number) * 100).toFixed(0)}%
                 </span>
@@ -1358,7 +1353,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
 
         <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-200">
           <div className="flex justify-between items-center mb-6">
-            <h3 className="text-xl font-bold">语音播报模板</h3>
+            <h3 className="text-xl font-bold text-slate-800">语音播报模板</h3>
             <button 
               onClick={handleSaveConfig}
               disabled={saving}
@@ -1374,10 +1369,9 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
                 value={editingTemplates.commentary}
                 onChange={(e) => setEditingTemplates({ ...editingTemplates, commentary: e.target.value })}
                 rows={4}
-                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm"
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm"
                 placeholder="可用变量: {team_name}, {case_name}, {content}"
               />
-              <p className="text-[10px] text-slate-400">变量说明: {'{team_name}'} 团队名, {'{case_name}'} 案例名, {'{content}'} 点评内容</p>
             </div>
             <div className="space-y-2">
               <label className="text-sm font-bold text-slate-700">报分语音模板</label>
@@ -1385,10 +1379,9 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
                 value={editingTemplates.score}
                 onChange={(e) => setEditingTemplates({ ...editingTemplates, score: e.target.value })}
                 rows={2}
-                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm"
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm"
                 placeholder="可用变量: {total_score}"
               />
-              <p className="text-[10px] text-slate-400">变量说明: {'{total_score}'} 最终总分</p>
             </div>
           </div>
         </div>

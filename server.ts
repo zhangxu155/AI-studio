@@ -7,7 +7,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 const DATA_DIR = path.resolve("data");
 const AUDIO_DIR = path.resolve("public/audio");
