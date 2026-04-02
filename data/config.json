@@ -4,7 +4,12 @@
     "provider": "gemini",
     "local_url": "http://localhost:11434/v1/chat/completions",
     "local_model": "llama3",
-    "local_api_key": ""
+    "local_api_key": "",
+    "tts_provider": "volcengine",
+    "volc_appid": "",
+    "volc_token": "",
+    "volc_cluster": "volcano_tts",
+    "volc_voice": "zh_female_shuangchu_moon_night_f0"
   },
   "rules": {
     "commentary_structure": "优点 + 待优化 + 建议",

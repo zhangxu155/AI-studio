@@ -10,7 +10,7 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
 const DATA_DIR = path.resolve("data");
-const AUDIO_DIR = path.resolve("public/audio");
+const AUDIO_DIR = path.resolve("data/audio");
 
 app.use(express.json({ limit: '50mb' }));
 app.use('/audio', express.static(AUDIO_DIR));
@@ -69,6 +69,21 @@ app.post("/api/cases", async (req, res) => {
   res.json(newCase);
 });
 
+app.delete("/api/cases/:id", async (req, res) => {
+  const { id } = req.params;
+  console.log(`DELETE /api/cases/${id}`);
+  let cases = await readJson("cases.json");
+  const initialLength = cases.length;
+  cases = cases.filter((c: any) => c.id !== id);
+  
+  if (cases.length === initialLength) {
+    return res.status(404).json({ error: "Case not found" });
+  }
+  
+  await writeJson("cases.json", cases);
+  res.json({ success: true });
+});
+
 // 4. Save Process Result
 app.post("/api/save-process-result", async (req, res) => {
   const { id, result, status, audio_comment, audio_score } = req.body;
@@ -101,8 +116,18 @@ app.post("/api/save-audio", async (req, res) => {
     return res.status(400).json({ error: "No data provided" });
   }
   try {
+    // Ensure directory exists again just in case
+    await fs.mkdir(AUDIO_DIR, { recursive: true });
+    
     const filePath = path.join(AUDIO_DIR, filename);
-    await fs.writeFile(filePath, Buffer.from(data, 'base64'));
+    
+    // Strip base64 prefix if present
+    let base64Data = data;
+    if (data.includes(',')) {
+      base64Data = data.split(',')[1];
+    }
+    
+    await fs.writeFile(filePath, Buffer.from(base64Data, 'base64'));
     console.log(`Saved audio to ${filePath}`);
     res.json({ success: true, url: `/audio/${filename}` });
   } catch (e: any) {
@@ -117,7 +142,113 @@ app.get("/api/logs", async (req, res) => {
   res.json(logs);
 });
 
-// 7. LLM Proxy (To bypass CORS for local models)
+// 7. Volcengine TTS Proxy
+app.post('/api/volc-tts', async (req, res) => {
+  const { text, appid, token, cluster, voice } = req.body;
+  
+  if (!appid || !token) {
+    return res.status(400).json({ error: "Missing Volcengine AppID or Token" });
+  }
+
+  try {
+    const response = await fetch('https://openspeech.bytedance.com/api/v1/tts', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer; ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        app: { appid, token, cluster: cluster || "volcano_tts" },
+        user: { uid: "judge_system" },
+        audio: {
+          voice_type: voice || "zh_female_shuangchu_moon_night_f0",
+          encoding: "wav",
+          speed_ratio: 1.0,
+          volume_ratio: 1.0,
+          pitch_ratio: 1.0
+        },
+        request: {
+          reqid: Math.random().toString(36).substring(7),
+          text,
+          text_type: "plain",
+          operation: "query"
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Volcengine TTS failed: ${response.status} ${errorText}`);
+    }
+
+    const data: any = await response.json();
+    if (data.data) {
+      // Volcengine returns base64 in data.data
+      res.json({ data: data.data });
+    } else {
+      console.error("Volcengine TTS Error Response:", data);
+      throw new Error(data.message || "Invalid response from Volcengine TTS");
+    }
+  } catch (error: any) {
+    console.error("Volcengine TTS Error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 8. Volcengine ASR Proxy (One-sentence recognition)
+app.post('/api/volc-asr', async (req, res) => {
+  const { audio, appid, token, cluster } = req.body;
+  
+  if (!appid || !token) {
+    return res.status(400).json({ error: "Missing Volcengine AppID or Token" });
+  }
+
+  try {
+    const response = await fetch('https://openspeech.bytedance.com/api/v1/asr', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer; ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        app: { appid, token, cluster: cluster || "volcano_asr" },
+        user: { uid: "judge_system" },
+        audio: {
+          format: "wav",
+          codec: "pcm",
+          rate: 16000,
+          bits: 16,
+          channel: 1
+        },
+        request: {
+          reqid: Math.random().toString(36).substring(7),
+          workflow: "audio_asr",
+          show_utterances: true,
+          result_type: "full",
+          sequence: 1,
+          operation: "query"
+        },
+        audio_data: audio // Base64 encoded audio
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Volcengine ASR failed: ${response.status} ${errorText}`);
+    }
+
+    const data: any = await response.json();
+    if (data.result && data.result.length > 0) {
+      res.json({ text: data.result[0].text });
+    } else {
+      res.status(500).json({ error: "Volcengine ASR failed", details: data });
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 9. LLM Proxy (To bypass CORS for local models)
 app.post("/api/llm-proxy", async (req, res) => {
   const { url, method, headers, body } = req.body;
   console.log(`POST /api/llm-proxy to ${url}`);
@@ -130,6 +261,13 @@ app.post("/api/llm-proxy", async (req, res) => {
         ...headers
       },
       body: JSON.stringify(body)
+    }).catch(err => {
+      // Handle fetch errors (like ECONNREFUSED)
+      console.error(`Fetch error to ${url}:`, err);
+      if (err.message.includes('ECONNREFUSED') && (url.includes('localhost') || url.includes('127.0.0.1'))) {
+        throw new Error(`无法连接到本地模型 (${url})。请注意：在云端预览环境中，'localhost' 指向服务器容器而非您的电脑。请使用公网 URL (如 Ngrok) 或切换到 Gemini 模型。`);
+      }
+      throw err;
     });
 
     const contentType = response.headers.get("content-type");
@@ -160,7 +298,15 @@ app.post("/api/llm-proxy", async (req, res) => {
     }
   } catch (e: any) {
     console.error(`LLM Proxy Error for ${url}:`, e);
-    res.status(500).json({ error: "LLM Proxy failed", details: e.message });
+    let errorMessage = "LLM Proxy failed";
+    if (e.code === 'ECONNREFUSED' || e.message.includes('ECONNREFUSED')) {
+      if (url.includes('localhost') || url.includes('127.0.0.1')) {
+        errorMessage = `连接被拒绝：程序运行在云端，无法直接访问您本地的 localhost。请使用公网 IP 或 ngrok 等穿透工具，并将地址填入配置中。`;
+      } else {
+        errorMessage = `无法连接到目标服务器 (${url})，请检查地址是否正确或服务是否已启动。`;
+      }
+    }
+    res.status(500).json({ error: errorMessage, details: e.message });
   }
 });
 
@@ -175,7 +321,11 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static("dist"));
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
   }
 
   app.listen(PORT, "0.0.0.0", () => {
