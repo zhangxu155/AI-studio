@@ -1344,6 +1344,23 @@ const CasesTab = ({ onUpdate, cases, onSelectCase }: any) => {
     }
   };
 
+  const handleDeleteCase = async (id: string, caseName: string) => {
+    const confirmed = window.confirm(`确定删除案例「${caseName}」吗？此操作不可撤销。`);
+    if (!confirmed) return;
+
+    try {
+      const res = await fetch(`/api/cases/${id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `删除失败（${res.status}）`);
+      }
+      onUpdate();
+    } catch (e: any) {
+      console.error(e);
+      alert(`删除失败: ${e.message || '未知错误'}`);
+    }
+  };
+
   return (
     <div className="max-w-4xl mx-auto space-y-10">
       <div className="glass-card rounded-3xl p-8">
@@ -1401,6 +1418,12 @@ const CasesTab = ({ onUpdate, cases, onSelectCase }: any) => {
               </div>
               <div className="flex items-center gap-4">
                 <span className="text-xs font-mono text-slate-600">{c.id}</span>
+                <button
+                  onClick={() => handleDeleteCase(c.id, c.case_name)}
+                  className="px-4 py-2 bg-red-500/15 text-red-300 rounded-lg text-sm font-bold hover:bg-red-600 hover:text-white transition-all opacity-0 group-hover:opacity-100"
+                >
+                  删除
+                </button>
                 <button 
                   onClick={() => onSelectCase(c.id)}
                   className="px-4 py-2 bg-blue-600/20 text-blue-400 rounded-lg text-sm font-bold hover:bg-blue-600 hover:text-white transition-all opacity-0 group-hover:opacity-100"
