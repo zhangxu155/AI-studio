@@ -374,7 +374,8 @@ export default function App() {
   };
 
   const callVolcTTS = async (text: string): Promise<string | null> => {
-    if (!config?.llm?.volc_appid || !config?.llm?.volc_token) return null;
+    const accessToken = config?.llm?.volc_token || config?.llm?.volc_access_token || config?.llm?.volc_access_key;
+    if (!config?.llm?.volc_appid || !accessToken) return null;
 
     try {
       const res = await fetchWithRetry('/api/volc-tts', {
@@ -383,7 +384,7 @@ export default function App() {
         body: JSON.stringify({
           text,
           appid: config.llm.volc_appid,
-          token: config.llm.volc_token,
+          token: accessToken,
           cluster: config.llm.volc_tts_cluster || config.llm.volc_cluster || "volcano_tts",
           voice: config.llm.volc_voice || "zh_female_shuangchu_moon_night_f0"
         })
@@ -1065,13 +1066,14 @@ const CaseCard = ({ item, onProcess, loading, config, stage, callLLM, playAudio,
       let result: any = null;
 
       if (config?.llm?.tts_provider === 'volcengine') {
+        const accessToken = config?.llm?.volc_token || config?.llm?.volc_access_token || config?.llm?.volc_access_key;
         const asrResponse = await fetch('/api/volc-asr', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             audio: base64Audio,
             appid: config?.llm?.volc_appid,
-            token: config?.llm?.volc_token,
+            token: accessToken,
             cluster: config?.llm?.volc_asr_cluster || "volcano_asr"
           })
         });
@@ -1455,6 +1457,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
     tts_provider: 'volcengine',
     volc_appid: '',
     volc_token: '',
+    volc_access_key: '',
     volc_tts_cluster: 'volcano_tts',
     volc_asr_cluster: 'volcano_asr',
     volc_voice: 'zh_female_shuangchu_moon_night_f0',
@@ -1474,6 +1477,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
       tts_provider: 'volcengine',
       volc_appid: '',
       volc_token: '',
+      volc_access_key: '',
       volc_tts_cluster: 'volcano_tts',
       volc_asr_cluster: 'volcano_asr',
       volc_voice: 'zh_female_shuangchu_moon_night_f0',
@@ -1714,13 +1718,13 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-bold text-slate-400">Volc Token</label>
+                <label className="text-sm font-bold text-slate-400">Volc Access Token / Access Key</label>
                 <input
                   type="password"
-                  value={editingLLM.volc_token || ""}
-                  onChange={e => setEditingLLM({ ...editingLLM, volc_token: e.target.value })}
+                  value={editingLLM.volc_token || editingLLM.volc_access_key || ""}
+                  onChange={e => setEditingLLM({ ...editingLLM, volc_token: e.target.value, volc_access_key: e.target.value })}
                   className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-blue-500"
-                  placeholder="火山引擎 Access Token"
+                  placeholder="火山引擎 Access Token / Access Key"
                 />
               </div>
               <div className="space-y-2">

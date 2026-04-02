@@ -144,21 +144,22 @@ app.get("/api/logs", async (req, res) => {
 
 // 7. Volcengine TTS Proxy
 app.post('/api/volc-tts', async (req, res) => {
-  const { text, appid, token, cluster, voice } = req.body;
+  const { text, appid, token, access_token, accessKey, access_key, cluster, voice } = req.body;
+  const authToken = token || access_token || accessKey || access_key;
   
-  if (!appid || !token) {
-    return res.status(400).json({ error: "Missing Volcengine AppID or Token" });
+  if (!appid || !authToken) {
+    return res.status(400).json({ error: "Missing Volcengine AppID or Access Token" });
   }
 
   try {
     const response = await fetch('https://openspeech.bytedance.com/api/v1/tts', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer; ${token}`,
+        'Authorization': `Bearer; ${authToken}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        app: { appid, token, cluster: cluster || "volcano_tts" },
+        app: { appid, token: authToken, cluster: cluster || "volcano_tts" },
         user: { uid: "judge_system" },
         audio: {
           voice_type: voice || "zh_female_shuangchu_moon_night_f0",
@@ -197,21 +198,22 @@ app.post('/api/volc-tts', async (req, res) => {
 
 // 8. Volcengine ASR Proxy (One-sentence recognition)
 app.post('/api/volc-asr', async (req, res) => {
-  const { audio, appid, token, cluster } = req.body;
+  const { audio, appid, token, access_token, accessKey, access_key, cluster } = req.body;
+  const authToken = token || access_token || accessKey || access_key;
   
-  if (!appid || !token) {
-    return res.status(400).json({ error: "Missing Volcengine AppID or Token" });
+  if (!appid || !authToken) {
+    return res.status(400).json({ error: "Missing Volcengine AppID or Access Token" });
   }
 
   try {
     const response = await fetch('https://openspeech.bytedance.com/api/v1/asr', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer; ${token}`,
+        'Authorization': `Bearer; ${authToken}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        app: { appid, token, cluster: cluster || "volcano_asr" },
+        app: { appid, token: authToken, cluster: cluster || "volcano_asr" },
         user: { uid: "judge_system" },
         audio: {
           format: "wav",

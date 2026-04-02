@@ -8,6 +8,7 @@
     "tts_provider": "volcengine",
     "volc_appid": "",
     "volc_token": "",
+    "volc_access_key": "",
     "volc_tts_cluster": "volcano_tts",
     "volc_asr_cluster": "volcano_asr",
     "volc_voice": "zh_female_shuangchu_moon_night_f0"
