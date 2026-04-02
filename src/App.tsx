@@ -9,7 +9,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('judge');
   const [config, setConfig] = useState<any>({
     stage: 'final',
-    llm: { provider: 'gemini' },
+    llm: { provider: 'local' },
     rules: { weights: {} },
     voice_templates: { commentary: '', score: '' }
   });
@@ -102,8 +102,8 @@ export default function App() {
     };
 
     if (!url) {
-      console.warn(`No audio URL provided for type: ${type}. Falling back to Gemini TTS.`);
-      if (fallbackText) {
+      console.warn(`No audio URL provided for type: ${type}. Falling back to runtime TTS.`);
+      if (fallbackText && config?.llm?.provider === 'gemini') {
         speakWithGemini(fallbackText);
       } else {
         speakFallback();
@@ -145,7 +145,7 @@ export default function App() {
       console.error("Audio play error:", e);
       setPlaying(null);
       if (e.name !== 'AbortError') {
-        if (fallbackText) {
+        if (fallbackText && config?.llm?.provider === 'gemini') {
           speakWithGemini(fallbackText);
         } else {
           speakFallback();
@@ -292,12 +292,18 @@ export default function App() {
       // Derive TTS URL from LLM URL (replace /chat/completions with /audio/speech)
       const ttsUrl = config.llm.local_url.replace(/\/chat\/completions$/, '/audio/speech');
       
+      const headers: Record<string, string> = {};
+      if (config.llm.local_api_key) {
+        headers.Authorization = `Bearer ${config.llm.local_api_key}`;
+      }
+
       const response = await fetch('/api/llm-proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           url: ttsUrl,
-          apiKey: config.llm.local_api_key,
+          method: 'POST',
+          headers,
           body: {
             model: config.llm.local_tts_model,
             input: text,
@@ -392,68 +398,90 @@ export default function App() {
       const text = await callLLM(prompt);
       const result = extractJSON(text);
 
-      // B. Generate TTS using Gemini
+      // B. Generate TTS (Gemini / Local)
       let audio_comment = "";
       let audio_score = "";
+      const commentaryText = config.voice_templates.commentary
+        .replace("{team_name}", caseItem.team_name)
+        .replace("{case_name}", caseItem.case_name)
+        .replace("{content}", result.voice_comment);
+      const scoreText = config.voice_templates.score.replace("{total_score}", result.total_score || "");
 
       try {
-        const ai = getGenAI();
-        
-        // 1. Commentary Audio
-        const commentaryText = config.voice_templates.commentary
-          .replace("{team_name}", caseItem.team_name)
-          .replace("{case_name}", caseItem.case_name)
-          .replace("{content}", result.voice_comment);
-
-        console.log("Generating Gemini TTS for commentary...");
-        const commentaryRes = await ai.models.generateContent({
-          model: "gemini-2.5-flash-preview-tts",
-          contents: [{ parts: [{ text: commentaryText }] }],
-          config: {
-            responseModalities: [Modality.AUDIO],
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
-          }
-        });
-
-        const commentBase64 = commentaryRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-        if (commentBase64) {
-          const wavBase64 = await pcmToWavBase64(commentBase64);
-          const saveRes = await fetchWithRetry('/api/save-audio', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filename: `comment_${id}.wav`, data: wavBase64 })
-          });
-          const saveResult = await saveRes.json();
-          audio_comment = saveResult.url;
-        }
-
-        // 2. Score Audio (Final only)
-        if (config.stage === 'final' && result.total_score) {
-          const scoreText = config.voice_templates.score.replace("{total_score}", result.total_score);
-          console.log("Generating Gemini TTS for score...");
-          const scoreRes = await ai.models.generateContent({
+        if (config.llm?.provider === 'gemini') {
+          const ai = getGenAI();
+          console.log("Generating Gemini TTS for commentary...");
+          const commentaryRes = await ai.models.generateContent({
             model: "gemini-2.5-flash-preview-tts",
-            contents: [{ parts: [{ text: scoreText }] }],
+            contents: [{ parts: [{ text: commentaryText }] }],
             config: {
               responseModalities: [Modality.AUDIO],
               speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
             }
           });
 
-          const scoreBase64 = scoreRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-          if (scoreBase64) {
-            const wavBase64 = await pcmToWavBase64(scoreBase64);
+          const commentBase64 = commentaryRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+          if (commentBase64) {
+            const wavBase64 = await pcmToWavBase64(commentBase64);
             const saveRes = await fetchWithRetry('/api/save-audio', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ filename: `score_${id}.wav`, data: wavBase64 })
+              body: JSON.stringify({ filename: `comment_${id}.wav`, data: wavBase64 })
             });
             const saveResult = await saveRes.json();
-            audio_score = saveResult.url;
+            audio_comment = saveResult.url;
+          }
+
+          if (config.stage === 'final' && result.total_score) {
+            console.log("Generating Gemini TTS for score...");
+            const scoreRes = await ai.models.generateContent({
+              model: "gemini-2.5-flash-preview-tts",
+              contents: [{ parts: [{ text: scoreText }] }],
+              config: {
+                responseModalities: [Modality.AUDIO],
+                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
+              }
+            });
+
+            const scoreBase64 = scoreRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+            if (scoreBase64) {
+              const wavBase64 = await pcmToWavBase64(scoreBase64);
+              const saveRes = await fetchWithRetry('/api/save-audio', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: `score_${id}.wav`, data: wavBase64 })
+              });
+              const saveResult = await saveRes.json();
+              audio_score = saveResult.url;
+            }
+          }
+        } else {
+          const localComment = await callLocalTTS(commentaryText);
+          if (localComment) {
+            const saveRes = await fetchWithRetry('/api/save-audio', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ filename: `comment_${id}.wav`, data: localComment })
+            });
+            const saveResult = await saveRes.json();
+            audio_comment = saveResult.url;
+          }
+
+          if (config.stage === 'final' && result.total_score) {
+            const localScore = await callLocalTTS(scoreText);
+            if (localScore) {
+              const saveRes = await fetchWithRetry('/api/save-audio', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: `score_${id}.wav`, data: localScore })
+              });
+              const saveResult = await saveRes.json();
+              audio_score = saveResult.url;
+            }
           }
         }
       } catch (ttsErr) {
-        console.warn("Gemini TTS generation failed, will use browser fallback:", ttsErr);
+        console.warn("TTS generation failed, will use browser fallback:", ttsErr);
       }
 
       // Save Results to Server
@@ -473,11 +501,6 @@ export default function App() {
       await fetchData();
       
       // Auto play commentary after generation
-      const commentaryText = config.voice_templates.commentary
-        .replace("{team_name}", caseItem.team_name)
-        .replace("{case_name}", caseItem.case_name)
-        .replace("{content}", result.voice_comment);
-      
       playAudio(audio_comment, 'comment', commentaryText);
 
     } catch (e: any) {
@@ -936,6 +959,11 @@ const CaseCard = ({ item, onProcess, loading, config, stage, callLLM, playAudio,
   const handleLiveSummarization = async (blob: Blob) => {
     setIsSummarizing(true);
     try {
+      if (config?.llm?.provider !== 'gemini') {
+        alert("当前为本地模型模式，暂不支持录音自动总结。请手动补充演示与答辩表现。");
+        return;
+      }
+
       const reader = new FileReader();
       const base64Promise = new Promise<string>((resolve) => {
         reader.onloadend = () => {
@@ -1280,9 +1308,9 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
   const [editingWeights, setEditingWeights] = useState({ ...config.rules.weights });
   const [editingTemplates, setEditingTemplates] = useState({ ...config.voice_templates });
   const [editingLLM, setEditingLLM] = useState({ 
-    provider: 'gemini',
+    provider: 'local',
     local_url: 'http://localhost:11434/v1/chat/completions',
-    local_model: 'llama3',
+    local_model: 'qwen2.5:7b-instruct',
     local_api_key: '',
     local_tts_model: '',
     ...config.llm 
@@ -1293,9 +1321,9 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
     setEditingWeights({ ...config.rules.weights });
     setEditingTemplates({ ...config.voice_templates });
     setEditingLLM({ 
-      provider: 'gemini',
+      provider: 'local',
       local_url: 'http://localhost:11434/v1/chat/completions',
-      local_model: 'llama3',
+      local_model: 'qwen2.5:7b-instruct',
       local_api_key: '',
       local_tts_model: '',
       ...config.llm 
@@ -1441,22 +1469,22 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
         <div className="space-y-8">
           <div className="flex gap-2 p-1.5 bg-white/5 rounded-2xl w-fit">
             <button 
-              onClick={() => setEditingLLM({ ...editingLLM, provider: 'gemini' })}
-              className={cn(
-                "px-8 py-2.5 rounded-xl font-bold transition-all",
-                editingLLM.provider === 'gemini' ? "bg-blue-600 text-white shadow-lg shadow-blue-900/40" : "text-slate-400 hover:text-white"
-              )}
-            >
-              Gemini (云端)
-            </button>
-            <button 
               onClick={() => setEditingLLM({ ...editingLLM, provider: 'local' })}
               className={cn(
                 "px-8 py-2.5 rounded-xl font-bold transition-all",
                 editingLLM.provider === 'local' ? "bg-blue-600 text-white shadow-lg shadow-blue-900/40" : "text-slate-400 hover:text-white"
               )}
             >
-              本地大模型
+              本地大模型（推荐）
+            </button>
+            <button 
+              onClick={() => setEditingLLM({ ...editingLLM, provider: 'gemini' })}
+              className={cn(
+                "px-8 py-2.5 rounded-xl font-bold transition-all",
+                editingLLM.provider === 'gemini' ? "bg-blue-600 text-white shadow-lg shadow-blue-900/40" : "text-slate-400 hover:text-white"
+              )}
+            >
+              Gemini (可选)
             </button>
           </div>
 
@@ -1505,7 +1533,7 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
             </div>
           ) : (
             <div className="p-8 bg-blue-500/10 rounded-3xl border border-blue-500/20">
-              <p className="text-blue-400 font-medium">当前正在使用 Google Gemini 引擎，提供极速且智能的评审体验。</p>
+              <p className="text-blue-400 font-medium">当前正在使用 Google Gemini 引擎。若处于公司内网不可访问外网环境，建议切换到“本地大模型（推荐）”。</p>
             </div>
           )}
           
