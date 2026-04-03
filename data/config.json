@@ -1,15 +1,19 @@
 {
   "stage": "final",
   "llm": {
-    "provider": "gemini",
+    "provider": "local",
     "local_url": "http://localhost:11434/v1/chat/completions",
-    "local_model": "llama3",
+    "local_model": "qwen2.5:7b-instruct",
     "local_api_key": "",
     "tts_provider": "volcengine",
     "volc_appid": "",
     "volc_token": "",
-    "volc_cluster": "volcano_tts",
-    "volc_voice": "zh_female_shuangchu_moon_night_f0"
+    "volc_access_key": "",
+    "volc_resource_id": "seed-tts-1.0",
+    "volc_speaker": "zh_female_cancan_mars_bigtts",
+    "volc_tts_cluster": "volcano_tts",
+    "volc_asr_cluster": "volcano_asr",
+    "volc_voice": "zh_female_cancan_mars_bigtts"
   },
   "rules": {
     "commentary_structure": "优点 + 待优化 + 建议",
