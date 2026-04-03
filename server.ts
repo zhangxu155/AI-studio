@@ -155,7 +155,7 @@ app.post('/api/volc-tts', async (req, res) => {
     const response = await fetch('https://openspeech.bytedance.com/api/v1/tts', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer; ${authToken}`,
+        'Authorization': `Bearer;${authToken}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
@@ -209,7 +209,7 @@ app.post('/api/volc-asr', async (req, res) => {
     const response = await fetch('https://openspeech.bytedance.com/api/v1/asr', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer; ${authToken}`,
+        'Authorization': `Bearer;${authToken}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
