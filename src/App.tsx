@@ -117,8 +117,23 @@ export default function App() {
         utterance.lang = 'zh-CN';
         
         const voices = window.speechSynthesis.getVoices();
-        const zhVoice = voices.find(v => v.lang.includes('zh') || v.lang.includes('CN'));
-        if (zhVoice) utterance.voice = zhVoice;
+        const isMandarin = (lang: string) => {
+          const normalized = (lang || '').toLowerCase();
+          return (
+            normalized.includes('zh-cn') ||
+            normalized.includes('cmn') ||
+            (normalized.includes('zh') && !normalized.includes('hk') && !normalized.includes('yue'))
+          );
+        };
+        const mandarinVoice =
+          voices.find(v => isMandarin(v.lang)) ||
+          voices.find(v => (v.lang || '').toLowerCase().includes('zh-cn')) ||
+          null;
+        if (mandarinVoice) {
+          utterance.voice = mandarinVoice;
+        } else {
+          console.warn("[TTS fallback] No explicit Mandarin voice found, using browser default voice.");
+        }
         
         utterance.onend = () => setPlaying(null);
         utterance.onerror = () => setPlaying(null);
