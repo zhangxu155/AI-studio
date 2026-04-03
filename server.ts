@@ -144,34 +144,49 @@ app.get("/api/logs", async (req, res) => {
 
 // 7. Volcengine TTS Proxy
 app.post('/api/volc-tts', async (req, res) => {
-  const { text, appid, token, cluster, voice } = req.body;
+  const {
+    text,
+    appid,
+    token,
+    access_token,
+    accessKey,
+    access_key,
+    resource_id,
+    speaker,
+    format
+  } = req.body;
+  const authToken = token || access_token || accessKey || access_key;
   
-  if (!appid || !token) {
-    return res.status(400).json({ error: "Missing Volcengine AppID or Token" });
+  if (!appid || !authToken) {
+    return res.status(400).json({ error: "Missing Volcengine AppID or Access Token" });
+  }
+  if (!text) {
+    return res.status(400).json({ error: "Missing text for TTS" });
   }
 
   try {
-    const response = await fetch('https://openspeech.bytedance.com/api/v1/tts', {
+    const response = await fetch('https://openspeech.bytedance.com/api/v3/tts/unidirectional/sse', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer; ${token}`,
-        'Content-Type': 'application/json'
+        'X-Api-App-Id': appid,
+        'X-Api-Access-Key': authToken,
+        'X-Api-Resource-Id': resource_id || "seed-tts-1.0",
+        'Content-Type': 'application/json',
+        'Connection': 'keep-alive'
       },
       body: JSON.stringify({
-        app: { appid, token, cluster: cluster || "volcano_tts" },
         user: { uid: "judge_system" },
-        audio: {
-          voice_type: voice || "zh_female_shuangchu_moon_night_f0",
-          encoding: "wav",
-          speed_ratio: 1.0,
-          volume_ratio: 1.0,
-          pitch_ratio: 1.0
-        },
-        request: {
-          reqid: Math.random().toString(36).substring(7),
+        req_params: {
           text,
-          text_type: "plain",
-          operation: "query"
+          speaker: speaker || "zh_female_cancan_mars_bigtts",
+          audio_params: {
+            format: format || "mp3",
+            sample_rate: 24000
+          },
+          additions: JSON.stringify({
+            explicit_language: "zh",
+            disable_markdown_filter: true
+          })
         }
       })
     });
@@ -181,14 +196,82 @@ app.post('/api/volc-tts', async (req, res) => {
       throw new Error(`Volcengine TTS failed: ${response.status} ${errorText}`);
     }
 
-    const data: any = await response.json();
-    if (data.data) {
-      // Volcengine returns base64 in data.data
-      res.json({ data: data.data });
-    } else {
-      console.error("Volcengine TTS Error Response:", data);
-      throw new Error(data.message || "Invalid response from Volcengine TTS");
+    if (!response.body) {
+      throw new Error("Volcengine TTS response has no body stream");
     }
+
+    const decoder = new TextDecoder("utf-8");
+    const reader = response.body.getReader();
+    const audioChunks: Buffer[] = [];
+    let gotAnyEvent = false;
+    let gotBusinessError = false;
+    let sseBuffer = "";
+    let eventName = "";
+    let eventData = "";
+
+    const handleEvent = (evt: { event: string; data: string }) => {
+      gotAnyEvent = true;
+      try {
+        const payload = JSON.parse(evt.data);
+        if (payload.code === 0 && payload.data) {
+          audioChunks.push(Buffer.from(payload.data, "base64"));
+          return;
+        }
+        if (payload.code > 0 && payload.code !== 20000000) {
+          gotBusinessError = true;
+          console.error("Volcengine TTS business error:", payload);
+        }
+      } catch {
+        console.warn("Failed to parse Volcengine SSE event:", evt.data?.slice(0, 120));
+      }
+    };
+
+    const flushLineBuffer = () => {
+      while (true) {
+        const newlineIndex = sseBuffer.indexOf("\n");
+        if (newlineIndex === -1) break;
+        let line = sseBuffer.slice(0, newlineIndex);
+        sseBuffer = sseBuffer.slice(newlineIndex + 1);
+        line = line.replace(/\r$/, "");
+
+        if (line === "") {
+          if (eventData) {
+            handleEvent({ event: eventName || "message", data: eventData.replace(/\n$/, "") });
+          }
+          eventName = "";
+          eventData = "";
+          continue;
+        }
+        if (line.startsWith(":")) continue;
+        const colonIndex = line.indexOf(":");
+        if (colonIndex === -1) continue;
+        const field = line.slice(0, colonIndex);
+        const value = line.slice(colonIndex + 1).trimStart();
+        if (field === "event") eventName = value;
+        if (field === "data") eventData += value + "\n";
+      }
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      sseBuffer += decoder.decode(value, { stream: true });
+      flushLineBuffer();
+    }
+    sseBuffer += decoder.decode();
+    flushLineBuffer();
+
+    if (!gotAnyEvent) {
+      throw new Error("No SSE events received from Volcengine TTS");
+    }
+    if (gotBusinessError) {
+      throw new Error("Volcengine TTS returned business error events");
+    }
+    const finalBuffer = Buffer.concat(audioChunks);
+    if (!finalBuffer.length) {
+      throw new Error("Volcengine TTS returned empty audio");
+    }
+    res.json({ data: finalBuffer.toString("base64") });
   } catch (error: any) {
     console.error("Volcengine TTS Error:", error);
     res.status(500).json({ error: error.message });
@@ -197,21 +280,22 @@ app.post('/api/volc-tts', async (req, res) => {
 
 // 8. Volcengine ASR Proxy (One-sentence recognition)
 app.post('/api/volc-asr', async (req, res) => {
-  const { audio, appid, token, cluster } = req.body;
+  const { audio, appid, token, access_token, accessKey, access_key, cluster } = req.body;
+  const authToken = token || access_token || accessKey || access_key;
   
-  if (!appid || !token) {
-    return res.status(400).json({ error: "Missing Volcengine AppID or Token" });
+  if (!appid || !authToken) {
+    return res.status(400).json({ error: "Missing Volcengine AppID or Access Token" });
   }
 
   try {
     const response = await fetch('https://openspeech.bytedance.com/api/v1/asr', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer; ${token}`,
+        'Authorization': `Bearer;${authToken}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        app: { appid, token, cluster: cluster || "volcano_asr" },
+        app: { appid, token: authToken, cluster: cluster || "volcano_asr" },
         user: { uid: "judge_system" },
         audio: {
           format: "wav",
