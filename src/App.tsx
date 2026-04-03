@@ -898,18 +898,18 @@ const HighFidelityJudgeView = ({ item, onProcess, loading, config, stage, playAu
             ) : (
               <div className="glass-card rounded-2xl p-8 text-center space-y-6">
                 <p className="text-slate-400">准备好开始评测了吗？</p>
-                <div className="flex gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full">
                   <input 
                     value={demoPerf}
                     onChange={(e) => setDemoPerf(e.target.value)}
                     placeholder="补充演示细节..."
-                    className="flex-1 px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-blue-500"
+                    className="w-full min-w-0 px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-blue-500"
                   />
                   <input 
                     value={defensePerf}
                     onChange={(e) => setDefensePerf(e.target.value)}
                     placeholder="补充答辩细节..."
-                    className="flex-1 px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-blue-500"
+                    className="w-full min-w-0 px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-blue-500"
                   />
                 </div>
                 <button 
