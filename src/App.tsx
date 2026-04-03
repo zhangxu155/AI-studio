@@ -400,6 +400,9 @@ export default function App() {
           text,
           appid: config.llm.volc_appid,
           token: accessToken,
+          resource_id: config.llm.volc_resource_id || "seed-tts-1.0",
+          speaker: config.llm.volc_speaker || config.llm.volc_voice || "zh_female_cancan_mars_bigtts",
+          format: "wav",
           cluster: config.llm.volc_tts_cluster || config.llm.volc_cluster || "volcano_tts",
           voice: config.llm.volc_voice || "zh_female_shuangchu_moon_night_f0"
         })
@@ -1473,9 +1476,11 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
     volc_appid: '',
     volc_token: '',
     volc_access_key: '',
+    volc_resource_id: 'seed-tts-1.0',
+    volc_speaker: 'zh_female_cancan_mars_bigtts',
     volc_tts_cluster: 'volcano_tts',
     volc_asr_cluster: 'volcano_asr',
-    volc_voice: 'zh_female_shuangchu_moon_night_f0',
+    volc_voice: 'zh_female_cancan_mars_bigtts',
     ...config.llm 
   });
   const [saving, setSaving] = useState(false);
@@ -1493,9 +1498,11 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
       volc_appid: '',
       volc_token: '',
       volc_access_key: '',
+      volc_resource_id: 'seed-tts-1.0',
+      volc_speaker: 'zh_female_cancan_mars_bigtts',
       volc_tts_cluster: 'volcano_tts',
       volc_asr_cluster: 'volcano_asr',
-      volc_voice: 'zh_female_shuangchu_moon_night_f0',
+      volc_voice: 'zh_female_cancan_mars_bigtts',
       ...config.llm 
     });
   }, [config]);
@@ -1753,6 +1760,16 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
                 />
               </div>
               <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-400">Resource ID</label>
+                <input
+                  type="text"
+                  value={editingLLM.volc_resource_id || "seed-tts-1.0"}
+                  onChange={e => setEditingLLM({ ...editingLLM, volc_resource_id: e.target.value })}
+                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-blue-500"
+                  placeholder="seed-tts-1.0"
+                />
+              </div>
+              <div className="space-y-2">
                 <label className="text-sm font-bold text-slate-400">ASR Cluster</label>
                 <input
                   type="text"
@@ -1763,13 +1780,13 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
                 />
               </div>
               <div className="space-y-2 col-span-2">
-                <label className="text-sm font-bold text-slate-400">发音人 Voice</label>
+                <label className="text-sm font-bold text-slate-400">发音人 Speaker</label>
                 <input
                   type="text"
-                  value={editingLLM.volc_voice || ""}
-                  onChange={e => setEditingLLM({ ...editingLLM, volc_voice: e.target.value })}
+                  value={editingLLM.volc_speaker || editingLLM.volc_voice || "zh_female_cancan_mars_bigtts"}
+                  onChange={e => setEditingLLM({ ...editingLLM, volc_speaker: e.target.value, volc_voice: e.target.value })}
                   className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-blue-500"
-                  placeholder="zh_female_shuangchu_moon_night_f0"
+                  placeholder="zh_female_cancan_mars_bigtts"
                 />
               </div>
             </div>
