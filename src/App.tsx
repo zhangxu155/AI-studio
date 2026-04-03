@@ -1,126 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Settings, Users, PlayCircle, FileText, Activity, ShieldAlert, CheckCircle2, Loader2, Volume2, Trophy, RefreshCw, Sparkles, Mic, Square, Radio, ChevronLeft, ChevronRight, Menu } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
 import { GoogleGenAI, Modality } from "@google/genai";
-
-// --- Utilities ---
-
-function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
-
-const extractJSON = (text: string) => {
-  try {
-    // 1. Try direct parse first
-    return JSON.parse(text);
-  } catch (e) {
-    // 2. Try to find JSON block
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start !== -1 && end !== -1 && end > start) {
-      const jsonStr = text.substring(start, end + 1);
-      try {
-        return JSON.parse(jsonStr);
-      } catch (e2) {
-        console.error("Failed to parse extracted JSON block:", jsonStr);
-        throw new Error("模型返回的 JSON 格式不正确，请重试。");
-      }
-    }
-    console.error("No JSON block found in text:", text);
-    throw new Error("模型返回内容不包含有效的 JSON 数据。");
-  }
-};
-
-async function pcmToWavBase64(pcmBase64: string, sampleRate: number = 24000): Promise<string> {
-  try {
-    if (!pcmBase64) throw new Error("PCM data is empty");
-    
-    // Clean base64 string
-    const cleanedBase64 = pcmBase64.replace(/\s/g, '');
-    const binaryString = atob(cleanedBase64);
-    const len = binaryString.length;
-    console.log(`[PCM2WAV] Input length: ${len} bytes, SampleRate: ${sampleRate}Hz`);
-    
-    // Use a more efficient way to convert binary string to Uint8Array
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-    
-    const buffer = new ArrayBuffer(44 + len);
-    const view = new DataView(buffer);
-
-    // RIFF chunk descriptor
-    view.setUint32(0, 0x52494646, false); // "RIFF"
-    view.setUint32(4, 36 + len, true); // ChunkSize
-    view.setUint32(8, 0x57415645, false); // "WAVE"
-
-    // fmt sub-chunk
-    view.setUint32(12, 0x666d7420, false); // "fmt "
-    view.setUint32(16, 16, true); // Subchunk1Size
-    view.setUint16(20, 1, true); // AudioFormat (PCM)
-    view.setUint16(22, 1, true); // NumChannels (Mono)
-    view.setUint32(24, sampleRate, true); // SampleRate
-    view.setUint32(28, sampleRate * 2, true); // ByteRate
-    view.setUint16(32, 2, true); // BlockAlign
-    view.setUint16(34, 16, true); // BitsPerSample
-
-    // data sub-chunk
-    view.setUint32(36, 0x64617461, false); // "data"
-    view.setUint32(40, len, true); // Subchunk2Size
-
-    // Write PCM data
-    const uint8View = new Uint8Array(buffer);
-    uint8View.set(bytes, 44);
-
-    const blob = new Blob([buffer], { type: 'audio/wav' });
-    console.log(`[PCM2WAV] Created WAV blob: ${blob.size} bytes`);
-    
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64 = (reader.result as string).split(',')[1];
-        resolve(base64);
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-  } catch (e: any) {
-    console.error("[PCM2WAV] Error:", e);
-    throw e;
-  }
-}
-
-// --- Components ---
-
-const NavItem = ({ icon: Icon, label, active, onClick, collapsed }: any) => (
-  <button
-    onClick={onClick}
-    className={cn(
-      "w-full flex items-center gap-4 px-5 py-4 transition-all duration-300 rounded-2xl relative group",
-      active 
-        ? "bg-blue-600 text-white shadow-xl shadow-blue-900/40" 
-        : "text-slate-500 hover:bg-white/5 hover:text-white",
-      collapsed && "justify-center px-0"
-    )}
-  >
-    <Icon size={22} className={cn("transition-transform duration-300", active && "scale-110")} />
-    {!collapsed && <span className="font-bold tracking-tight">{label}</span>}
-    {collapsed && (
-      <div className="absolute left-full ml-4 px-2 py-1 bg-slate-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 whitespace-nowrap">
-        {label}
-      </div>
-    )}
-  </button>
-);
+import { NavItem } from './components/NavItem';
+import { cn, extractJSON, pcmToWavBase64 } from './lib/utils';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('judge');
   const [config, setConfig] = useState<any>({
     stage: 'final',
-    llm: { provider: 'gemini' },
+    llm: { provider: 'local' },
     rules: { weights: {} },
     voice_templates: { commentary: '', score: '' }
   });
@@ -193,6 +82,34 @@ export default function App() {
       }
     };
 
+    const speakWithVolc = async (text: string) => {
+      try {
+        setPlaying(type);
+        const volcBase64 = await callVolcTTS(text);
+        if (!volcBase64) {
+          speakFallback();
+          return;
+        }
+        const blob = await (await fetch(`data:audio/wav;base64,${volcBase64}`)).blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const audio = new Audio(blobUrl);
+        audioRef.current = audio;
+        audio.onended = () => {
+          setPlaying(null);
+          URL.revokeObjectURL(blobUrl);
+        };
+        audio.onerror = () => {
+          setPlaying(null);
+          URL.revokeObjectURL(blobUrl);
+          speakFallback();
+        };
+        await audio.play();
+      } catch (err) {
+        console.error("Volc TTS fallback failed:", err);
+        speakFallback();
+      }
+    };
+
     const speakFallback = () => {
       if (fallbackText && 'speechSynthesis' in window) {
         setPlaying(type);
@@ -200,8 +117,23 @@ export default function App() {
         utterance.lang = 'zh-CN';
         
         const voices = window.speechSynthesis.getVoices();
-        const zhVoice = voices.find(v => v.lang.includes('zh') || v.lang.includes('CN'));
-        if (zhVoice) utterance.voice = zhVoice;
+        const isMandarin = (lang: string) => {
+          const normalized = (lang || '').toLowerCase();
+          return (
+            normalized.includes('zh-cn') ||
+            normalized.includes('cmn') ||
+            (normalized.includes('zh') && !normalized.includes('hk') && !normalized.includes('yue'))
+          );
+        };
+        const mandarinVoice =
+          voices.find(v => isMandarin(v.lang)) ||
+          voices.find(v => (v.lang || '').toLowerCase().includes('zh-cn')) ||
+          null;
+        if (mandarinVoice) {
+          utterance.voice = mandarinVoice;
+        } else {
+          console.warn("[TTS fallback] No explicit Mandarin voice found, using browser default voice.");
+        }
         
         utterance.onend = () => setPlaying(null);
         utterance.onerror = () => setPlaying(null);
@@ -213,8 +145,10 @@ export default function App() {
     };
 
     if (!url) {
-      console.warn(`No audio URL provided for type: ${type}. Falling back to Gemini TTS.`);
-      if (fallbackText) {
+      console.warn(`No audio URL provided for type: ${type}. Falling back to runtime TTS.`);
+      if (fallbackText && config?.llm?.tts_provider === 'volcengine') {
+        speakWithVolc(fallbackText);
+      } else if (fallbackText && config?.llm?.provider === 'gemini') {
         speakWithGemini(fallbackText);
       } else {
         speakFallback();
@@ -244,7 +178,9 @@ export default function App() {
         console.error("Audio element error:", e);
         setPlaying(null);
         URL.revokeObjectURL(blobUrl);
-        if (fallbackText) {
+        if (fallbackText && config?.llm?.tts_provider === 'volcengine') {
+          speakWithVolc(fallbackText);
+        } else if (fallbackText && config?.llm?.provider === 'gemini') {
           speakWithGemini(fallbackText);
         } else {
           speakFallback();
@@ -256,7 +192,9 @@ export default function App() {
       console.error("Audio play error:", e);
       setPlaying(null);
       if (e.name !== 'AbortError') {
-        if (fallbackText) {
+        if (fallbackText && config?.llm?.tts_provider === 'volcengine') {
+          speakWithVolc(fallbackText);
+        } else if (fallbackText && config?.llm?.provider === 'gemini') {
           speakWithGemini(fallbackText);
         } else {
           speakFallback();
@@ -403,12 +341,18 @@ export default function App() {
       // Derive TTS URL from LLM URL (replace /chat/completions with /audio/speech)
       const ttsUrl = config.llm.local_url.replace(/\/chat\/completions$/, '/audio/speech');
       
+      const headers: Record<string, string> = {};
+      if (config.llm.local_api_key) {
+        headers.Authorization = `Bearer ${config.llm.local_api_key}`;
+      }
+
       const response = await fetch('/api/llm-proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           url: ttsUrl,
-          apiKey: config.llm.local_api_key,
+          method: 'POST',
+          headers,
           body: {
             model: config.llm.local_tts_model,
             input: text,
@@ -440,6 +384,33 @@ export default function App() {
       });
     } catch (error) {
       console.error("Local TTS Error:", error);
+      return null;
+    }
+  };
+
+  const callVolcTTS = async (text: string): Promise<string | null> => {
+    const accessToken = config?.llm?.volc_token || config?.llm?.volc_access_token || config?.llm?.volc_access_key;
+    if (!config?.llm?.volc_appid || !accessToken) return null;
+
+    try {
+      const res = await fetchWithRetry('/api/volc-tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          appid: config.llm.volc_appid,
+          token: accessToken,
+          resource_id: config.llm.volc_resource_id || "seed-tts-1.0",
+          speaker: config.llm.volc_speaker || config.llm.volc_voice || "zh_female_cancan_mars_bigtts",
+          format: "wav",
+          cluster: config.llm.volc_tts_cluster || config.llm.volc_cluster || "volcano_tts",
+          voice: config.llm.volc_voice || "zh_female_shuangchu_moon_night_f0"
+        })
+      });
+      const data = await res.json();
+      return data?.data || null;
+    } catch (error) {
+      console.error("Volc TTS Error:", error);
       return null;
     }
   };
@@ -503,68 +474,114 @@ export default function App() {
       const text = await callLLM(prompt);
       const result = extractJSON(text);
 
-      // B. Generate TTS using Gemini
+      // B. Generate TTS (Gemini / Local)
       let audio_comment = "";
       let audio_score = "";
+      const commentaryText = config.voice_templates.commentary
+        .replace("{team_name}", caseItem.team_name)
+        .replace("{case_name}", caseItem.case_name)
+        .replace("{content}", result.voice_comment);
+      const scoreText = config.voice_templates.score.replace("{total_score}", result.total_score || "");
 
       try {
-        const ai = getGenAI();
-        
-        // 1. Commentary Audio
-        const commentaryText = config.voice_templates.commentary
-          .replace("{team_name}", caseItem.team_name)
-          .replace("{case_name}", caseItem.case_name)
-          .replace("{content}", result.voice_comment);
-
-        console.log("Generating Gemini TTS for commentary...");
-        const commentaryRes = await ai.models.generateContent({
-          model: "gemini-2.5-flash-preview-tts",
-          contents: [{ parts: [{ text: commentaryText }] }],
-          config: {
-            responseModalities: [Modality.AUDIO],
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
+        if (config.llm?.tts_provider === 'volcengine') {
+          const volcComment = await callVolcTTS(commentaryText);
+          if (volcComment) {
+            const saveRes = await fetchWithRetry('/api/save-audio', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ filename: `comment_${id}.wav`, data: volcComment })
+            });
+            const saveResult = await saveRes.json();
+            audio_comment = saveResult.url;
           }
-        });
 
-        const commentBase64 = commentaryRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-        if (commentBase64) {
-          const wavBase64 = await pcmToWavBase64(commentBase64);
-          const saveRes = await fetchWithRetry('/api/save-audio', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filename: `comment_${id}.wav`, data: wavBase64 })
-          });
-          const saveResult = await saveRes.json();
-          audio_comment = saveResult.url;
-        }
-
-        // 2. Score Audio (Final only)
-        if (config.stage === 'final' && result.total_score) {
-          const scoreText = config.voice_templates.score.replace("{total_score}", result.total_score);
-          console.log("Generating Gemini TTS for score...");
-          const scoreRes = await ai.models.generateContent({
+          if (config.stage === 'final' && result.total_score) {
+            const volcScore = await callVolcTTS(scoreText);
+            if (volcScore) {
+              const saveRes = await fetchWithRetry('/api/save-audio', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: `score_${id}.wav`, data: volcScore })
+              });
+              const saveResult = await saveRes.json();
+              audio_score = saveResult.url;
+            }
+          }
+        } else if (config.llm?.provider === 'gemini') {
+          const ai = getGenAI();
+          console.log("Generating Gemini TTS for commentary...");
+          const commentaryRes = await ai.models.generateContent({
             model: "gemini-2.5-flash-preview-tts",
-            contents: [{ parts: [{ text: scoreText }] }],
+            contents: [{ parts: [{ text: commentaryText }] }],
             config: {
               responseModalities: [Modality.AUDIO],
               speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
             }
           });
 
-          const scoreBase64 = scoreRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-          if (scoreBase64) {
-            const wavBase64 = await pcmToWavBase64(scoreBase64);
+          const commentBase64 = commentaryRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+          if (commentBase64) {
+            const wavBase64 = await pcmToWavBase64(commentBase64);
             const saveRes = await fetchWithRetry('/api/save-audio', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ filename: `score_${id}.wav`, data: wavBase64 })
+              body: JSON.stringify({ filename: `comment_${id}.wav`, data: wavBase64 })
             });
             const saveResult = await saveRes.json();
-            audio_score = saveResult.url;
+            audio_comment = saveResult.url;
+          }
+
+          if (config.stage === 'final' && result.total_score) {
+            console.log("Generating Gemini TTS for score...");
+            const scoreRes = await ai.models.generateContent({
+              model: "gemini-2.5-flash-preview-tts",
+              contents: [{ parts: [{ text: scoreText }] }],
+              config: {
+                responseModalities: [Modality.AUDIO],
+                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
+              }
+            });
+
+            const scoreBase64 = scoreRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+            if (scoreBase64) {
+              const wavBase64 = await pcmToWavBase64(scoreBase64);
+              const saveRes = await fetchWithRetry('/api/save-audio', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: `score_${id}.wav`, data: wavBase64 })
+              });
+              const saveResult = await saveRes.json();
+              audio_score = saveResult.url;
+            }
+          }
+        } else {
+          const localComment = await callLocalTTS(commentaryText);
+          if (localComment) {
+            const saveRes = await fetchWithRetry('/api/save-audio', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ filename: `comment_${id}.wav`, data: localComment })
+            });
+            const saveResult = await saveRes.json();
+            audio_comment = saveResult.url;
+          }
+
+          if (config.stage === 'final' && result.total_score) {
+            const localScore = await callLocalTTS(scoreText);
+            if (localScore) {
+              const saveRes = await fetchWithRetry('/api/save-audio', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: `score_${id}.wav`, data: localScore })
+              });
+              const saveResult = await saveRes.json();
+              audio_score = saveResult.url;
+            }
           }
         }
       } catch (ttsErr) {
-        console.warn("Gemini TTS generation failed, will use browser fallback:", ttsErr);
+        console.warn("TTS generation failed, will use browser fallback:", ttsErr);
       }
 
       // Save Results to Server
@@ -584,11 +601,6 @@ export default function App() {
       await fetchData();
       
       // Auto play commentary after generation
-      const commentaryText = config.voice_templates.commentary
-        .replace("{team_name}", caseItem.team_name)
-        .replace("{case_name}", caseItem.case_name)
-        .replace("{content}", result.voice_comment);
-      
       playAudio(audio_comment, 'comment', commentaryText);
 
     } catch (e: any) {
@@ -1057,8 +1069,10 @@ const CaseCard = ({ item, onProcess, loading, config, stage, callLLM, playAudio,
       reader.readAsDataURL(blob);
       const base64Audio = await base64Promise;
 
-      const prompt = `
-        你是一个专业的赛事观察员。请根据这段现场录音（包含选手的演示说明和评委的答辩对话），总结选手的现场表现。
+      const summaryPromptFromText = (transcript: string) => `
+        你是一个专业的赛事观察员。请根据以下现场转写内容（包含选手的演示说明和评委的答辩对话），总结选手的现场表现。
+        转写内容：
+        ${transcript}
         
         请输出JSON格式：
         {
@@ -1067,22 +1081,61 @@ const CaseCard = ({ item, onProcess, loading, config, stage, callLLM, playAudio,
         }
       `;
 
-      const ai = new GoogleGenAI({ apiKey: (process as any).env.GEMINI_API_KEY || (process as any).env.API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [
-          { text: prompt },
-          {
-            inlineData: {
-              mimeType: "audio/wav",
-              data: base64Audio
-            }
-          }
-        ],
-        config: { responseMimeType: "application/json" }
-      });
+      let result: any = null;
 
-      const result = extractJSON(response.text || "{}");
+      if (config?.llm?.tts_provider === 'volcengine') {
+        const accessToken = config?.llm?.volc_token || config?.llm?.volc_access_token || config?.llm?.volc_access_key;
+        const asrResponse = await fetch('/api/volc-asr', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            audio: base64Audio,
+            appid: config?.llm?.volc_appid,
+            token: accessToken,
+            cluster: config?.llm?.volc_asr_cluster || "volcano_asr"
+          })
+        });
+        const asrJson = asrResponse.ok ? await asrResponse.json() : null;
+        const transcript = asrJson?.text;
+        if (transcript) {
+          const summarized = await callLLM(summaryPromptFromText(transcript));
+          result = extractJSON(summarized || "{}");
+        }
+      }
+
+      if (!result && config?.llm?.provider === 'gemini') {
+        const prompt = `
+          你是一个专业的赛事观察员。请根据这段现场录音（包含选手的演示说明和评委的答辩对话），总结选手的现场表现。
+          
+          请输出JSON格式：
+          {
+            "demo_summary": "作品演示表现总结（如：演示过程是否流畅，是否有技术故障，操作是否便捷等）",
+            "defense_summary": "现场答辩表现总结（如：逻辑是否清晰，回答问题是否准确，反应速度等）"
+          }
+        `;
+
+        const ai = new GoogleGenAI({ apiKey: (process as any).env.GEMINI_API_KEY || (process as any).env.API_KEY });
+        const response = await ai.models.generateContent({
+          model: "gemini-3-flash-preview",
+          contents: [
+            { text: prompt },
+            {
+              inlineData: {
+                mimeType: "audio/wav",
+                data: base64Audio
+              }
+            }
+          ],
+          config: { responseMimeType: "application/json" }
+        });
+        result = extractJSON(response.text || "{}");
+      }
+
+      if (!result) {
+        alert("自动总结失败：请检查火山引擎配置（ASR）或切换到 Gemini 后重试。");
+        return;
+      }
+
       if (result.demo_summary) setDemoPerf(result.demo_summary);
       if (result.defense_summary) setDefensePerf(result.defense_summary);
       
@@ -1311,6 +1364,23 @@ const CasesTab = ({ onUpdate, cases, onSelectCase }: any) => {
     }
   };
 
+  const handleDeleteCase = async (id: string, caseName: string) => {
+    const confirmed = window.confirm(`确定删除案例「${caseName}」吗？此操作不可撤销。`);
+    if (!confirmed) return;
+
+    try {
+      const res = await fetch(`/api/cases/${id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `删除失败（${res.status}）`);
+      }
+      onUpdate();
+    } catch (e: any) {
+      console.error(e);
+      alert(`删除失败: ${e.message || '未知错误'}`);
+    }
+  };
+
   return (
     <div className="max-w-4xl mx-auto space-y-10">
       <div className="glass-card rounded-3xl p-8">
@@ -1368,6 +1438,12 @@ const CasesTab = ({ onUpdate, cases, onSelectCase }: any) => {
               </div>
               <div className="flex items-center gap-4">
                 <span className="text-xs font-mono text-slate-600">{c.id}</span>
+                <button
+                  onClick={() => handleDeleteCase(c.id, c.case_name)}
+                  className="px-4 py-2 bg-red-500/15 text-red-300 rounded-lg text-sm font-bold hover:bg-red-600 hover:text-white transition-all opacity-0 group-hover:opacity-100"
+                >
+                  删除
+                </button>
                 <button 
                   onClick={() => onSelectCase(c.id)}
                   className="px-4 py-2 bg-blue-600/20 text-blue-400 rounded-lg text-sm font-bold hover:bg-blue-600 hover:text-white transition-all opacity-0 group-hover:opacity-100"
@@ -1391,11 +1467,20 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
   const [editingWeights, setEditingWeights] = useState({ ...config.rules.weights });
   const [editingTemplates, setEditingTemplates] = useState({ ...config.voice_templates });
   const [editingLLM, setEditingLLM] = useState({ 
-    provider: 'gemini',
+    provider: 'local',
     local_url: 'http://localhost:11434/v1/chat/completions',
-    local_model: 'llama3',
+    local_model: 'qwen2.5:7b-instruct',
     local_api_key: '',
     local_tts_model: '',
+    tts_provider: 'volcengine',
+    volc_appid: '',
+    volc_token: '',
+    volc_access_key: '',
+    volc_resource_id: 'seed-tts-1.0',
+    volc_speaker: 'zh_female_cancan_mars_bigtts',
+    volc_tts_cluster: 'volcano_tts',
+    volc_asr_cluster: 'volcano_asr',
+    volc_voice: 'zh_female_cancan_mars_bigtts',
     ...config.llm 
   });
   const [saving, setSaving] = useState(false);
@@ -1404,11 +1489,20 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
     setEditingWeights({ ...config.rules.weights });
     setEditingTemplates({ ...config.voice_templates });
     setEditingLLM({ 
-      provider: 'gemini',
+      provider: 'local',
       local_url: 'http://localhost:11434/v1/chat/completions',
-      local_model: 'llama3',
+      local_model: 'qwen2.5:7b-instruct',
       local_api_key: '',
       local_tts_model: '',
+      tts_provider: 'volcengine',
+      volc_appid: '',
+      volc_token: '',
+      volc_access_key: '',
+      volc_resource_id: 'seed-tts-1.0',
+      volc_speaker: 'zh_female_cancan_mars_bigtts',
+      volc_tts_cluster: 'volcano_tts',
+      volc_asr_cluster: 'volcano_asr',
+      volc_voice: 'zh_female_cancan_mars_bigtts',
       ...config.llm 
     });
   }, [config]);
@@ -1552,22 +1646,22 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
         <div className="space-y-8">
           <div className="flex gap-2 p-1.5 bg-white/5 rounded-2xl w-fit">
             <button 
-              onClick={() => setEditingLLM({ ...editingLLM, provider: 'gemini' })}
-              className={cn(
-                "px-8 py-2.5 rounded-xl font-bold transition-all",
-                editingLLM.provider === 'gemini' ? "bg-blue-600 text-white shadow-lg shadow-blue-900/40" : "text-slate-400 hover:text-white"
-              )}
-            >
-              Gemini (云端)
-            </button>
-            <button 
               onClick={() => setEditingLLM({ ...editingLLM, provider: 'local' })}
               className={cn(
                 "px-8 py-2.5 rounded-xl font-bold transition-all",
                 editingLLM.provider === 'local' ? "bg-blue-600 text-white shadow-lg shadow-blue-900/40" : "text-slate-400 hover:text-white"
               )}
             >
-              本地大模型
+              本地大模型（推荐）
+            </button>
+            <button 
+              onClick={() => setEditingLLM({ ...editingLLM, provider: 'gemini' })}
+              className={cn(
+                "px-8 py-2.5 rounded-xl font-bold transition-all",
+                editingLLM.provider === 'gemini' ? "bg-blue-600 text-white shadow-lg shadow-blue-900/40" : "text-slate-400 hover:text-white"
+              )}
+            >
+              Gemini (可选)
             </button>
           </div>
 
@@ -1616,9 +1710,87 @@ const ConfigTab = ({ config, onUpdate, callLLM }: any) => {
             </div>
           ) : (
             <div className="p-8 bg-blue-500/10 rounded-3xl border border-blue-500/20">
-              <p className="text-blue-400 font-medium">当前正在使用 Google Gemini 引擎，提供极速且智能的评审体验。</p>
+              <p className="text-blue-400 font-medium">当前正在使用 Google Gemini 引擎。若处于公司内网不可访问外网环境，建议切换到“本地大模型（推荐）”。</p>
             </div>
           )}
+
+          <div className="p-8 bg-white/5 rounded-3xl border border-white/5 space-y-6">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xl font-bold text-white">语音服务配置（火山引擎）</h4>
+              <button
+                onClick={() => setEditingLLM({ ...editingLLM, tts_provider: editingLLM.tts_provider === 'volcengine' ? 'local' : 'volcengine' })}
+                className={cn(
+                  "px-4 py-2 rounded-lg text-sm font-bold transition-all",
+                  editingLLM.tts_provider === 'volcengine' ? "bg-blue-600 text-white" : "bg-white/10 text-slate-300"
+                )}
+              >
+                {editingLLM.tts_provider === 'volcengine' ? '已启用火山语音' : '使用本地语音'}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-8">
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-400">Volc AppID</label>
+                <input
+                  type="text"
+                  value={editingLLM.volc_appid || ""}
+                  onChange={e => setEditingLLM({ ...editingLLM, volc_appid: e.target.value })}
+                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-blue-500"
+                  placeholder="火山引擎 AppID"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-400">Volc Access Token / Access Key</label>
+                <input
+                  type="password"
+                  value={editingLLM.volc_token || editingLLM.volc_access_key || ""}
+                  onChange={e => setEditingLLM({ ...editingLLM, volc_token: e.target.value, volc_access_key: e.target.value })}
+                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-blue-500"
+                  placeholder="火山引擎 Access Token / Access Key"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-400">TTS Cluster</label>
+                <input
+                  type="text"
+                  value={editingLLM.volc_tts_cluster || "volcano_tts"}
+                  onChange={e => setEditingLLM({ ...editingLLM, volc_tts_cluster: e.target.value })}
+                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-blue-500"
+                  placeholder="volcano_tts"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-400">Resource ID</label>
+                <input
+                  type="text"
+                  value={editingLLM.volc_resource_id || "seed-tts-1.0"}
+                  onChange={e => setEditingLLM({ ...editingLLM, volc_resource_id: e.target.value })}
+                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-blue-500"
+                  placeholder="seed-tts-1.0"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-400">ASR Cluster</label>
+                <input
+                  type="text"
+                  value={editingLLM.volc_asr_cluster || "volcano_asr"}
+                  onChange={e => setEditingLLM({ ...editingLLM, volc_asr_cluster: e.target.value })}
+                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-blue-500"
+                  placeholder="volcano_asr"
+                />
+              </div>
+              <div className="space-y-2 col-span-2">
+                <label className="text-sm font-bold text-slate-400">发音人 Speaker</label>
+                <input
+                  type="text"
+                  value={editingLLM.volc_speaker || editingLLM.volc_voice || "zh_female_cancan_mars_bigtts"}
+                  onChange={e => setEditingLLM({ ...editingLLM, volc_speaker: e.target.value, volc_voice: e.target.value })}
+                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-blue-500"
+                  placeholder="zh_female_cancan_mars_bigtts"
+                />
+              </div>
+            </div>
+          </div>
           
           <div className="flex justify-end">
             <button 
