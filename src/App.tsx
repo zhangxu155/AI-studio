@@ -21,6 +21,18 @@ export default function App() {
   const [processingId, setProcessingId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
+  const logClientEvent = async (action: string, payload: Record<string, any> = {}) => {
+    try {
+      await fetch('/api/log-event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, ...payload })
+      });
+    } catch (e) {
+      console.warn("Failed to write client log:", action, e);
+    }
+  };
+
   const toggleSidebar = () => {
     setIsSidebarCollapsed(!isSidebarCollapsed);
   };
@@ -44,6 +56,7 @@ export default function App() {
 
     const speakWithGemini = async (text: string) => {
       try {
+        await logClientEvent("AUDIO_FALLBACK_GEMINI_START", { type });
         setPlaying(type);
         const ai = getGenAI();
         const response = await ai.models.generateContent({
@@ -76,14 +89,17 @@ export default function App() {
         };
 
         await audio.play();
+        await logClientEvent("AUDIO_FALLBACK_GEMINI_SUCCESS", { type });
       } catch (err) {
         console.error("Gemini TTS fallback failed:", err);
+        await logClientEvent("AUDIO_FALLBACK_GEMINI_ERROR", { type, error: (err as any)?.message || String(err) });
         speakFallback();
       }
     };
 
     const speakWithVolc = async (text: string) => {
       try {
+        await logClientEvent("AUDIO_FALLBACK_VOLC_START", { type });
         setPlaying(type);
         const volcBase64 = await callVolcTTS(text);
         if (!volcBase64) {
@@ -104,8 +120,10 @@ export default function App() {
           speakFallback();
         };
         await audio.play();
+        await logClientEvent("AUDIO_FALLBACK_VOLC_SUCCESS", { type });
       } catch (err) {
         console.error("Volc TTS fallback failed:", err);
+        await logClientEvent("AUDIO_FALLBACK_VOLC_ERROR", { type, error: (err as any)?.message || String(err) });
         speakFallback();
       }
     };
@@ -134,6 +152,11 @@ export default function App() {
         } else {
           console.warn("[TTS fallback] No explicit Mandarin voice found, using browser default voice.");
         }
+        logClientEvent("AUDIO_FALLBACK_BROWSER", {
+          type,
+          lang: utterance.lang,
+          voice: (utterance.voice && (utterance.voice as any).name) || "browser-default"
+        });
         
         utterance.onend = () => setPlaying(null);
         utterance.onerror = () => setPlaying(null);
@@ -146,6 +169,7 @@ export default function App() {
 
     if (!url) {
       console.warn(`No audio URL provided for type: ${type}. Falling back to runtime TTS.`);
+      logClientEvent("AUDIO_NO_URL_FALLBACK", { type, tts_provider: config?.llm?.tts_provider, provider: config?.llm?.provider });
       if (fallbackText && config?.llm?.tts_provider === 'volcengine') {
         speakWithVolc(fallbackText);
       } else if (fallbackText && config?.llm?.provider === 'gemini') {
@@ -159,6 +183,7 @@ export default function App() {
     setPlaying(type);
     
     try {
+      await logClientEvent("AUDIO_PLAY_URL_START", { type, url });
       const response = await fetch(url);
       if (!response.ok) throw new Error(`无法获取音频文件: ${response.status}`);
       
@@ -188,8 +213,10 @@ export default function App() {
       };
 
       await audio.play();
+      await logClientEvent("AUDIO_PLAY_URL_SUCCESS", { type, url });
     } catch (e: any) {
       console.error("Audio play error:", e);
+      await logClientEvent("AUDIO_PLAY_URL_ERROR", { type, url, error: e?.message || String(e) });
       setPlaying(null);
       if (e.name !== 'AbortError') {
         if (fallbackText && config?.llm?.tts_provider === 'volcengine') {

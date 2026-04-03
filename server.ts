@@ -38,6 +38,16 @@ async function writeJson(filename: string, data: any) {
   await fs.writeFile(path.join(DATA_DIR, filename), JSON.stringify(data, null, 2));
 }
 
+async function appendLog(action: string, payload: Record<string, any> = {}) {
+  const logs = await readJson("logs.json");
+  logs.push({
+    timestamp: new Date().toISOString(),
+    action,
+    ...payload
+  });
+  await writeJson("logs.json", logs);
+}
+
 // --- API Routes ---
 
 // 1. Config
@@ -100,10 +110,7 @@ app.post("/api/save-process-result", async (req, res) => {
 
   await writeJson("cases.json", cases);
 
-  // Log
-  const logs = await readJson("logs.json");
-  logs.push({ timestamp: new Date().toISOString(), action: "AI_PROCESS_SAVE", case_id: id, status: "SUCCESS" });
-  await writeJson("logs.json", logs);
+  await appendLog("AI_PROCESS_SAVE", { case_id: id, status: "SUCCESS" });
 
   res.json(caseItem);
 });
@@ -140,6 +147,15 @@ app.post("/api/save-audio", async (req, res) => {
 app.get("/api/logs", async (req, res) => {
   const logs = await readJson("logs.json");
   res.json(logs);
+});
+
+app.post("/api/log-event", async (req, res) => {
+  const { action, ...payload } = req.body || {};
+  if (!action) {
+    return res.status(400).json({ error: "Missing action" });
+  }
+  await appendLog(action, payload);
+  res.json({ success: true });
 });
 
 // 7. Volcengine TTS Proxy
@@ -271,8 +287,19 @@ app.post('/api/volc-tts', async (req, res) => {
     if (!finalBuffer.length) {
       throw new Error("Volcengine TTS returned empty audio");
     }
+    await appendLog("VOLC_TTS_SUCCESS", {
+      provider: "volcengine",
+      resource_id: resource_id || "seed-tts-1.0",
+      speaker: speaker || "zh_female_cancan_mars_bigtts",
+      text_length: text.length,
+      audio_bytes: finalBuffer.length
+    });
     res.json({ data: finalBuffer.toString("base64") });
   } catch (error: any) {
+    await appendLog("VOLC_TTS_ERROR", {
+      provider: "volcengine",
+      error: error.message
+    });
     console.error("Volcengine TTS Error:", error);
     res.status(500).json({ error: error.message });
   }
@@ -323,11 +350,23 @@ app.post('/api/volc-asr', async (req, res) => {
 
     const data: any = await response.json();
     if (data.result && data.result.length > 0) {
+      await appendLog("VOLC_ASR_SUCCESS", {
+        provider: "volcengine",
+        text_length: data.result[0].text?.length || 0
+      });
       res.json({ text: data.result[0].text });
     } else {
+      await appendLog("VOLC_ASR_ERROR", {
+        provider: "volcengine",
+        details: data
+      });
       res.status(500).json({ error: "Volcengine ASR failed", details: data });
     }
   } catch (error: any) {
+    await appendLog("VOLC_ASR_ERROR", {
+      provider: "volcengine",
+      error: error.message
+    });
     res.status(500).json({ error: error.message });
   }
 });
