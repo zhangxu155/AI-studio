@@ -837,7 +837,7 @@ const HighFidelityJudgeView = ({ item, onProcess, loading, config, stage, playAu
       {/* Main Layout */}
       <div className="flex-1 grid grid-cols-12 gap-12 items-center">
         {/* Left: Avatar */}
-        <div className="col-span-4 flex flex-col items-center">
+        <div className="col-span-4 flex items-center justify-center">
           <div className="relative group">
             <div className="absolute -inset-4 bg-blue-500/20 blur-3xl rounded-full opacity-50 group-hover:opacity-100 transition-opacity" />
             <motion.div 
@@ -853,16 +853,6 @@ const HighFidelityJudgeView = ({ item, onProcess, loading, config, stage, playAu
               />
               <div className="absolute inset-0 bg-gradient-to-t from-blue-900/40 to-transparent" />
             </motion.div>
-            
-            {/* Label */}
-            <div className="mt-8 relative">
-              <div className="absolute inset-0 bg-blue-400/40 blur-xl rounded-full" />
-              <div className="relative px-16 py-4 bg-gradient-to-r from-blue-600/80 to-blue-400/80 backdrop-blur-md rounded-lg shadow-lg overflow-hidden">
-                {/* Brush stroke effect simulation */}
-                <div className="absolute inset-0 opacity-20 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')]" />
-                <span className="text-white font-bold text-2xl tracking-[0.2em] relative z-10">AI评委</span>
-              </div>
-            </div>
           </div>
         </div>
 
