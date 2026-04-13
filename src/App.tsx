@@ -859,16 +859,11 @@ const HighFidelityJudgeView = ({ item, onProcess, loading, config, stage, playAu
         {/* Middle: Info & Scores */}
         <div className="col-span-5 space-y-10">
           {/* Team Info */}
-          <div className="flex items-center gap-6">
-            <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center text-white font-bold text-2xl shadow-lg shadow-blue-900/40">
-              {item.team_name[0] === 'A' ? '电' : item.team_name[0]}
-            </div>
-            <div>
-              <h3 className="text-4xl font-bold text-white mb-2 tracking-tight">{item.case_name}</h3>
-              <p className="text-slate-400 text-lg font-medium opacity-80">
-                {item.team_name}
-              </p>
-            </div>
+          <div>
+            <h3 className="text-4xl font-bold text-white mb-2 tracking-tight">{item.case_name}</h3>
+            <p className="text-slate-400 text-lg font-medium opacity-80">
+              {item.team_name}
+            </p>
           </div>
 
           {/* Scores List */}
