@@ -876,7 +876,7 @@ const HighFidelityJudgeView = ({ item, onProcess, loading, config, stage, playAu
             <div>
               <h3 className="text-4xl font-bold text-white mb-2 tracking-tight">{item.case_name}</h3>
               <p className="text-slate-400 text-lg font-medium opacity-80">
-                {item.team_name} · 团队ID:{item.id}
+                {item.team_name}
               </p>
             </div>
           </div>
@@ -1183,7 +1183,7 @@ const CaseCard = ({ item, onProcess, loading, config, stage, callLLM, playAudio,
           </div>
           <div>
             <h3 className="text-xl font-bold text-slate-900">{item.case_name}</h3>
-            <p className="text-slate-400 text-sm">{item.team_name} · 团队 ID: {item.id}</p>
+            <p className="text-slate-400 text-sm">{item.team_name}</p>
           </div>
         </div>
         <div className={cn(
@@ -1464,7 +1464,6 @@ const CasesTab = ({ onUpdate, cases, onSelectCase }: any) => {
                 <p className="text-xs text-slate-500 uppercase tracking-widest mt-1">{c.team_name}</p>
               </div>
               <div className="flex items-center gap-4">
-                <span className="text-xs font-mono text-slate-600">{c.id}</span>
                 <button
                   onClick={() => handleDeleteCase(c.id, c.case_name)}
                   className="px-4 py-2 bg-red-500/15 text-red-300 rounded-lg text-sm font-bold hover:bg-red-600 hover:text-white transition-all opacity-0 group-hover:opacity-100"
