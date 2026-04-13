@@ -711,7 +711,7 @@ export default function App() {
         </div>
 
         {/* Header */}
-        <header className="px-12 py-8 flex justify-between items-center relative z-10">
+        <header className="px-12 py-5 flex justify-between items-center relative z-10">
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-3 text-blue-400 text-sm">
               <div className="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.8)] animate-pulse" />
@@ -724,7 +724,7 @@ export default function App() {
           </div>
         </header>
 
-        <div className="flex-1 p-12 relative z-10 flex flex-col">
+        <div className="flex-1 px-12 pt-6 pb-8 relative z-10 flex flex-col">
           <AnimatePresence mode="wait">
             {activeTab === 'judge' && (
               <motion.div
@@ -835,7 +835,7 @@ const HighFidelityJudgeView = ({ item, onProcess, loading, config, stage, playAu
       </AnimatePresence>
 
       {/* Main Layout */}
-      <div className="flex-1 grid grid-cols-12 gap-12 items-center">
+      <div className="flex-1 grid grid-cols-12 gap-8 items-start">
         {/* Left: Avatar */}
         <div className="col-span-4 flex items-center justify-center">
           <div className="relative group">
@@ -857,7 +857,7 @@ const HighFidelityJudgeView = ({ item, onProcess, loading, config, stage, playAu
         </div>
 
         {/* Middle: Info & Scores */}
-        <div className="col-span-5 space-y-10">
+        <div className="col-span-5 space-y-7">
           {/* Team Info */}
           <div>
             <h3 className="text-4xl font-bold text-white mb-2 tracking-tight">{item.case_name}</h3>
@@ -990,14 +990,14 @@ const HighFidelityJudgeView = ({ item, onProcess, loading, config, stage, playAu
         <motion.div 
           initial={{ y: 20, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
-          className="mt-12 space-y-4"
+          className="mt-8 space-y-4"
         >
           <div className="flex items-center gap-3">
             <div className="w-1 h-6 bg-blue-500 rounded-full" />
             <h4 className="text-2xl font-bold text-white tracking-wide">AI 评语：</h4>
           </div>
           <div className="glass-card rounded-3xl p-8">
-            <p className="text-slate-300 text-xl leading-relaxed font-light">
+            <p className="text-slate-200 text-2xl leading-relaxed font-light">
               {item.result?.pure_comment}
             </p>
           </div>
