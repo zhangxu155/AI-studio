@@ -990,12 +990,8 @@ const HighFidelityJudgeView = ({ item, onProcess, loading, config, stage, playAu
         <motion.div 
           initial={{ y: 20, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
-          className="mt-8 space-y-4"
+          className="mt-6"
         >
-          <div className="flex items-center gap-3">
-            <div className="w-1 h-6 bg-blue-500 rounded-full" />
-            <h4 className="text-2xl font-bold text-white tracking-wide">AI 评语：</h4>
-          </div>
           <div className="glass-card rounded-3xl p-8">
             <p className="text-slate-200 text-2xl leading-relaxed font-light">
               {item.result?.pure_comment}
