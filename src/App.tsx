@@ -644,8 +644,7 @@ export default function App() {
 
       await fetchData();
       
-      // Auto play commentary after generation
-      playAudio(audio_comment, 'comment', commentaryText);
+      // Keep playback manual to avoid unexpected auto-audio after generation.
 
     } catch (e: any) {
       console.error("Process error", e);
