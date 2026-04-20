@@ -5,6 +5,15 @@ import { GoogleGenAI, Modality } from "@google/genai";
 import { NavItem } from './components/NavItem';
 import { cn, extractJSON, pcmToWavBase64 } from './lib/utils';
 
+const applyVoiceTemplate = (template: string, values: Record<string, any>) => {
+  let output = template || "";
+  Object.entries(values).forEach(([key, value]) => {
+    const safeValue = value === undefined || value === null ? "" : String(value);
+    output = output.replace(new RegExp(`\\{${key}\\}`, 'g'), safeValue);
+  });
+  return output;
+};
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('judge');
   const [config, setConfig] = useState<any>({
@@ -504,11 +513,19 @@ export default function App() {
       // B. Generate TTS (Gemini / Local)
       let audio_comment = "";
       let audio_score = "";
-      const commentaryText = config.voice_templates.commentary
-        .replace("{team_name}", caseItem.team_name)
-        .replace("{case_name}", caseItem.case_name)
-        .replace("{content}", result.voice_comment);
-      const scoreText = config.voice_templates.score.replace("{total_score}", result.total_score || "");
+      const commentaryText = applyVoiceTemplate(config.voice_templates.commentary, {
+        team_name: caseItem.team_name,
+        case_name: caseItem.case_name,
+        content: result.voice_comment,
+        total_score: result.total_score || "",
+        "total score": result.total_score || "",
+        totalScore: result.total_score || ""
+      });
+      const scoreText = applyVoiceTemplate(config.voice_templates.score, {
+        total_score: result.total_score || "",
+        "total score": result.total_score || "",
+        totalScore: result.total_score || ""
+      });
 
       try {
         if (config.llm?.tts_provider === 'volcengine') {
@@ -939,10 +956,14 @@ const HighFidelityJudgeView = ({ item, onProcess, loading, config, stage, playAu
               <div className="mt-12 flex flex-col gap-3">
                 <button 
                   onClick={() => {
-                    const fallbackText = config.voice_templates.commentary
-                      .replace("{team_name}", item.team_name)
-                      .replace("{case_name}", item.case_name)
-                      .replace("{content}", item.result?.voice_comment || "");
+                    const fallbackText = applyVoiceTemplate(config.voice_templates.commentary, {
+                      team_name: item.team_name,
+                      case_name: item.case_name,
+                      content: item.result?.voice_comment || "",
+                      total_score: item.result?.total_score || "0",
+                      "total score": item.result?.total_score || "0",
+                      totalScore: item.result?.total_score || "0"
+                    });
                     playAudio(item.audio_comment, 'comment', fallbackText);
                   }}
                   disabled={playing !== null && playing !== 'comment'}
@@ -954,8 +975,11 @@ const HighFidelityJudgeView = ({ item, onProcess, loading, config, stage, playAu
                 {stage === 'final' && (
                   <button 
                     onClick={() => {
-                      const fallbackText = config.voice_templates.score
-                        .replace("{total_score}", item.result?.total_score || "0");
+                      const fallbackText = applyVoiceTemplate(config.voice_templates.score, {
+                        total_score: item.result?.total_score || "0",
+                        "total score": item.result?.total_score || "0",
+                        totalScore: item.result?.total_score || "0"
+                      });
                       playAudio(item.audio_score, 'score', fallbackText);
                     }}
                     disabled={playing !== null && playing !== 'score'}
@@ -1181,10 +1205,14 @@ const CaseCard = ({ item, onProcess, loading, config, stage, callLLM, playAudio,
           <div className="grid grid-cols-2 gap-4">
             <button 
               onClick={() => {
-                const fallbackText = config.voice_templates.commentary
-                  .replace("{team_name}", item.team_name)
-                  .replace("{case_name}", item.case_name)
-                  .replace("{content}", item.result?.voice_comment || "");
+                const fallbackText = applyVoiceTemplate(config.voice_templates.commentary, {
+                  team_name: item.team_name,
+                  case_name: item.case_name,
+                  content: item.result?.voice_comment || "",
+                  total_score: item.result?.total_score || "0",
+                  "total score": item.result?.total_score || "0",
+                  totalScore: item.result?.total_score || "0"
+                });
                 playAudio(item.audio_comment, 'comment', fallbackText);
               }}
               disabled={playing !== null && playing !== 'comment'}
@@ -1196,8 +1224,11 @@ const CaseCard = ({ item, onProcess, loading, config, stage, callLLM, playAudio,
             {stage === 'final' && (
               <button 
                 onClick={() => {
-                  const fallbackText = config.voice_templates.score
-                    .replace("{total_score}", item.result?.total_score || "0");
+                  const fallbackText = applyVoiceTemplate(config.voice_templates.score, {
+                    total_score: item.result?.total_score || "0",
+                    "total score": item.result?.total_score || "0",
+                    totalScore: item.result?.total_score || "0"
+                  });
                   playAudio(item.audio_score, 'score', fallbackText);
                 }}
                 disabled={playing !== null && playing !== 'score'}
