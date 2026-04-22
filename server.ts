@@ -120,7 +120,7 @@ app.delete("/api/cases/:id", async (req, res) => {
 });
 
 // 3. File Parsing
-app.post("/api/parse-deliverables", async (req, res) => {
+const handleParseDeliverables = async (req: express.Request, res: express.Response) => {
   const files = req.body?.files;
   if (!Array.isArray(files) || files.length === 0) {
     return res.status(400).json({ error: "No files uploaded" });
@@ -139,9 +139,9 @@ app.post("/api/parse-deliverables", async (req, res) => {
   } catch (error: any) {
     res.status(400).json({ error: error.message || "Failed to parse deliverables" });
   }
-});
+};
 
-app.post("/api/parse-performance-contract", async (req, res) => {
+const handleParsePerformanceContract = async (req: express.Request, res: express.Response) => {
   const file = req.body?.file;
   if (!file?.filename || !file?.data) {
     return res.status(400).json({ error: "No contract file uploaded" });
@@ -153,7 +153,12 @@ app.post("/api/parse-performance-contract", async (req, res) => {
   } catch (error: any) {
     res.status(400).json({ error: error.message || "Failed to parse contract file" });
   }
-});
+};
+
+app.post("/api/parse-deliverables", handleParseDeliverables);
+app.post("/api/parse-performance-contract", handleParsePerformanceContract);
+app.post("/api/upload/deliverables", handleParseDeliverables);
+app.post("/api/upload/performance-contract", handleParsePerformanceContract);
 
 // 4. Save Process Result
 app.post("/api/save-process-result", async (req, res) => {

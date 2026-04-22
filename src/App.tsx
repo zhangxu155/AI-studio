@@ -1261,6 +1261,9 @@ const CaseCard = ({ item, onProcess, loading, config, stage, callLLM, playAudio,
 
 const CasesTab = ({ onUpdate, cases, onSelectCase }: any) => {
   const [formData, setFormData] = useState({ team_name: '', case_name: '', content: '' });
+  const [contractText, setContractText] = useState('');
+  const [deliverablesText, setDeliverablesText] = useState('');
+  const [uploading, setUploading] = useState(false);
 
   const handleSubmit = async (e: any) => {
     e.preventDefault();
@@ -1302,6 +1305,89 @@ const CasesTab = ({ onUpdate, cases, onSelectCase }: any) => {
     <div className="max-w-4xl mx-auto space-y-10">
       <div className="glass-card rounded-3xl p-8">
         <h3 className="text-2xl font-bold mb-8 flex items-center gap-3 text-white">
+          <FileText className="text-blue-500" /> 文件上传解析接口
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <label className="text-slate-300 text-sm flex flex-col gap-2">
+            上传绩效合同（Excel）
+            <input
+              type="file"
+              accept=".xls,.xlsx"
+              className="text-sm text-slate-300"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                setUploading(true);
+                try {
+                  const data64 = await toBase64(file);
+                  const res = await fetch('/api/parse-performance-contract', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file: { filename: file.name, data: data64 } })
+                  });
+                  const data = await res.json();
+                  if (!res.ok) throw new Error(data.error || '绩效合同解析失败');
+                  setContractText(data.text || '');
+                  setFormData(prev => ({
+                    ...prev,
+                    content: [prev.content, `【绩效合同:${file.name}】\n${data.text || ''}`].filter(Boolean).join('\n\n')
+                  }));
+                } catch (err: any) {
+                  alert(err.message || '绩效合同解析失败');
+                } finally {
+                  setUploading(false);
+                }
+              }}
+            />
+          </label>
+
+          <label className="text-slate-300 text-sm flex flex-col gap-2">
+            上传月度交付物（py/java/pdf/docx/pptx）
+            <input
+              type="file"
+              multiple
+              accept=".py,.java,.pdf,.docx,.pptx"
+              className="text-sm text-slate-300"
+              onChange={async (e) => {
+                const files = e.target.files;
+                if (!files?.length) return;
+                setUploading(true);
+                try {
+                  const payloadFiles = await Promise.all(
+                    Array.from(files as FileList).map(async (file: File) => ({ filename: file.name, data: await toBase64(file) }))
+                  );
+                  const res = await fetch('/api/parse-deliverables', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ files: payloadFiles })
+                  });
+                  const data = await res.json();
+                  if (!res.ok) throw new Error(data.error || '交付物解析失败');
+                  setDeliverablesText(data.mergedText || '');
+                  setFormData(prev => ({
+                    ...prev,
+                    content: [prev.content, data.mergedText || ''].filter(Boolean).join('\n\n')
+                  }));
+                } catch (err: any) {
+                  alert(err.message || '交付物解析失败');
+                } finally {
+                  setUploading(false);
+                }
+              }}
+            />
+          </label>
+        </div>
+
+        {(contractText || deliverablesText) && (
+          <div className="mt-6 p-4 rounded-xl bg-white/5 border border-white/10 text-xs text-slate-300 space-y-3 max-h-52 overflow-auto">
+            {contractText && <p><span className="text-blue-400">绩效合同摘要：</span>{contractText.slice(0, 300)}...</p>}
+            {deliverablesText && <p><span className="text-blue-400">交付物摘要：</span>{deliverablesText.slice(0, 300)}...</p>}
+          </div>
+        )}
+      </div>
+
+      <div className="glass-card rounded-3xl p-8">
+        <h3 className="text-2xl font-bold mb-8 flex items-center gap-3 text-white">
           <FileText className="text-blue-500" /> 录入新案例
         </h3>
         <form onSubmit={handleSubmit} className="space-y-6">
@@ -1338,8 +1424,12 @@ const CasesTab = ({ onUpdate, cases, onSelectCase }: any) => {
               placeholder="请输入项目背景、技术架构、创新点及应用价值..."
             />
           </div>
-          <button type="submit" className="w-full py-4 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-900/40">
-            确认录入案例
+          <button
+            type="submit"
+            disabled={uploading}
+            className="w-full py-4 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-900/40 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {uploading ? '文件解析中...' : '确认录入案例'}
           </button>
         </form>
       </div>
