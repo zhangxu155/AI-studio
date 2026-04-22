@@ -5,6 +5,17 @@ import { GoogleGenAI, Modality } from "@google/genai";
 import { NavItem } from './components/NavItem';
 import { cn, extractJSON, pcmToWavBase64 } from './lib/utils';
 
+const toBase64 = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const data = (reader.result as string).split(',')[1] || '';
+      resolve(data);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('judge');
   const [config, setConfig] = useState<any>({
@@ -418,7 +429,7 @@ export default function App() {
   // Robust JSON extraction
   // (Moved to top level)
 
-  const handleProcess = async (id: string, demoPerf: string = "", defensePerf: string = "") => {
+  const handleProcess = async (id: string, contractText: string = "", deliverablesText: string = "") => {
     if (processingId === id) {
       alert("正在生成中，请勿重复点击。");
       return;
@@ -447,9 +458,11 @@ export default function App() {
         案例名称：${caseItem.case_name}
         核心方案内容：${caseItem.content}
         
-        现场表现（外部输入信息）：
-        作品演示表现：${demoPerf || "（未提供演示表现，请主要基于方案内容评估）"}
-        现场答辩表现：${defensePerf || "（未提供答辩表现，请主要基于方案内容评估）"}
+        绩效合同（Excel 解析结果）：
+        ${contractText || "（未上传绩效合同）"}
+
+        月度任务交付物（py/java/pdf/docx/pptx 解析结果）：
+        ${deliverablesText || "（未上传任务交付物）"}
         
         点评要求：
         1. 结构：${config.rules.commentary_structure}
@@ -474,118 +487,8 @@ export default function App() {
       const text = await callLLM(prompt);
       const result = extractJSON(text);
 
-      // B. Generate TTS (Gemini / Local)
-      let audio_comment = "";
-      let audio_score = "";
-      const commentaryText = config.voice_templates.commentary
-        .replace("{team_name}", caseItem.team_name)
-        .replace("{case_name}", caseItem.case_name)
-        .replace("{content}", result.voice_comment);
-      const scoreText = config.voice_templates.score.replace("{total_score}", result.total_score || "");
-
-      try {
-        if (config.llm?.tts_provider === 'volcengine') {
-          const volcComment = await callVolcTTS(commentaryText);
-          if (volcComment) {
-            const saveRes = await fetchWithRetry('/api/save-audio', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ filename: `comment_${id}.wav`, data: volcComment })
-            });
-            const saveResult = await saveRes.json();
-            audio_comment = saveResult.url;
-          }
-
-          if (config.stage === 'final' && result.total_score) {
-            const volcScore = await callVolcTTS(scoreText);
-            if (volcScore) {
-              const saveRes = await fetchWithRetry('/api/save-audio', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filename: `score_${id}.wav`, data: volcScore })
-              });
-              const saveResult = await saveRes.json();
-              audio_score = saveResult.url;
-            }
-          }
-        } else if (config.llm?.provider === 'gemini') {
-          const ai = getGenAI();
-          console.log("Generating Gemini TTS for commentary...");
-          const commentaryRes = await ai.models.generateContent({
-            model: "gemini-2.5-flash-preview-tts",
-            contents: [{ parts: [{ text: commentaryText }] }],
-            config: {
-              responseModalities: [Modality.AUDIO],
-              speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
-            }
-          });
-
-          const commentBase64 = commentaryRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-          if (commentBase64) {
-            const wavBase64 = await pcmToWavBase64(commentBase64);
-            const saveRes = await fetchWithRetry('/api/save-audio', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ filename: `comment_${id}.wav`, data: wavBase64 })
-            });
-            const saveResult = await saveRes.json();
-            audio_comment = saveResult.url;
-          }
-
-          if (config.stage === 'final' && result.total_score) {
-            console.log("Generating Gemini TTS for score...");
-            const scoreRes = await ai.models.generateContent({
-              model: "gemini-2.5-flash-preview-tts",
-              contents: [{ parts: [{ text: scoreText }] }],
-              config: {
-                responseModalities: [Modality.AUDIO],
-                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
-              }
-            });
-
-            const scoreBase64 = scoreRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-            if (scoreBase64) {
-              const wavBase64 = await pcmToWavBase64(scoreBase64);
-              const saveRes = await fetchWithRetry('/api/save-audio', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filename: `score_${id}.wav`, data: wavBase64 })
-              });
-              const saveResult = await saveRes.json();
-              audio_score = saveResult.url;
-            }
-          }
-        } else {
-          const localComment = await callLocalTTS(commentaryText);
-          if (localComment) {
-            const saveRes = await fetchWithRetry('/api/save-audio', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ filename: `comment_${id}.wav`, data: localComment })
-            });
-            const saveResult = await saveRes.json();
-            audio_comment = saveResult.url;
-          }
-
-          if (config.stage === 'final' && result.total_score) {
-            const localScore = await callLocalTTS(scoreText);
-            if (localScore) {
-              const saveRes = await fetchWithRetry('/api/save-audio', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filename: `score_${id}.wav`, data: localScore })
-              });
-              const saveResult = await saveRes.json();
-              audio_score = saveResult.url;
-            }
-          }
-        }
-      } catch (ttsErr) {
-        console.warn("TTS generation failed, will use browser fallback:", ttsErr);
-      }
-
       // Save Results to Server
-      console.log("Saving process results to server...", { id, audio_comment, audio_score });
+      console.log("Saving process results to server...", { id });
       await fetchWithRetry('/api/save-process-result', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -593,15 +496,12 @@ export default function App() {
           id,
           result,
           status: 'completed',
-          audio_comment: audio_comment || "",
-          audio_score: audio_score || ""
+          audio_comment: "",
+          audio_score: ""
         })
       });
 
       await fetchData();
-      
-      // Auto play commentary after generation
-      playAudio(audio_comment, 'comment', commentaryText);
 
     } catch (e: any) {
       console.error("Process error", e);
@@ -724,12 +624,10 @@ export default function App() {
                       return (
                         <HighFidelityJudgeView 
                           item={activeCase}
-                          onProcess={(demo: string, defense: string) => handleProcess(activeCase.id, demo, defense)}
+                          onProcess={(contractText: string, deliverablesText: string) => handleProcess(activeCase.id, contractText, deliverablesText)}
                           loading={loading}
                           config={config}
                           stage={config?.stage}
-                          playAudio={playAudio}
-                          playing={playing}
                           cases={cases}
                           setActiveTab={setActiveTab}
                           onSelectCase={(id: string) => setSelectedCaseId(id)}
@@ -756,9 +654,10 @@ export default function App() {
 
 // --- Sub-components ---
 
-const HighFidelityJudgeView = ({ item, onProcess, loading, config, stage, playAudio, playing, cases, setActiveTab, onSelectCase }: any) => {
-  const [demoPerf, setDemoPerf] = useState("");
-  const [defensePerf, setDefensePerf] = useState("");
+const HighFidelityJudgeView = ({ item, onProcess, loading, config, stage, cases, setActiveTab, onSelectCase }: any) => {
+  const [contractText, setContractText] = useState("");
+  const [deliverablesText, setDeliverablesText] = useState("");
+  const [uploading, setUploading] = useState(false);
   const [showCaseSelector, setShowCaseSelector] = useState(false);
 
   const isCompleted = item.status === 'completed' || item.status === 'fallback';
@@ -871,26 +770,73 @@ const HighFidelityJudgeView = ({ item, onProcess, loading, config, stage, playAu
             ) : (
               <div className="glass-card rounded-2xl p-8 text-center space-y-6">
                 <p className="text-slate-400">准备好开始评测了吗？</p>
-                <div className="flex gap-4">
-                  <input 
-                    value={demoPerf}
-                    onChange={(e) => setDemoPerf(e.target.value)}
-                    placeholder="补充演示细节..."
-                    className="flex-1 px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-blue-500"
-                  />
-                  <input 
-                    value={defensePerf}
-                    onChange={(e) => setDefensePerf(e.target.value)}
-                    placeholder="补充答辩细节..."
-                    className="flex-1 px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white outline-none focus:border-blue-500"
-                  />
+                <div className="grid grid-cols-2 gap-4">
+                  <label className="text-slate-300 text-sm flex flex-col gap-2 text-left">
+                    上传绩效合同（Excel）
+                    <input
+                      type="file"
+                      accept=".xls,.xlsx"
+                      className="text-sm text-slate-300"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        setUploading(true);
+                        try {
+                          const data64 = await toBase64(file);
+                          const res = await fetch('/api/parse-performance-contract', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ file: { filename: file.name, data: data64 } })
+                          });
+                          const data = await res.json();
+                          if (!res.ok) throw new Error(data.error || '合同解析失败');
+                          setContractText(data.text || '');
+                        } catch (err: any) {
+                          alert(err.message || '合同解析失败');
+                        } finally {
+                          setUploading(false);
+                        }
+                      }}
+                    />
+                  </label>
+                  <label className="text-slate-300 text-sm flex flex-col gap-2 text-left">
+                    上传月度交付物（py/java/pdf/docx/pptx）
+                    <input
+                      type="file"
+                      multiple
+                      accept=".py,.java,.pdf,.docx,.pptx"
+                      className="text-sm text-slate-300"
+                      onChange={async (e) => {
+                        const files = e.target.files;
+                        if (!files?.length) return;
+                        setUploading(true);
+                        try {
+                          const payloadFiles = await Promise.all(
+                            Array.from(files as FileList).map(async (file: File) => ({ filename: file.name, data: await toBase64(file) }))
+                          );
+                          const res = await fetch('/api/parse-deliverables', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ files: payloadFiles })
+                          });
+                          const data = await res.json();
+                          if (!res.ok) throw new Error(data.error || '交付物解析失败');
+                          setDeliverablesText(data.mergedText || '');
+                        } catch (err: any) {
+                          alert(err.message || '交付物解析失败');
+                        } finally {
+                          setUploading(false);
+                        }
+                      }}
+                    />
+                  </label>
                 </div>
                 <button 
-                  onClick={() => onProcess(demoPerf, defensePerf)}
-                  disabled={loading}
+                  onClick={() => onProcess(contractText, deliverablesText)}
+                  disabled={loading || uploading}
                   className="w-full py-4 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-900/40 flex items-center justify-center gap-2"
                 >
-                  {loading ? <Loader2 className="animate-spin" size={20} /> : <PlayCircle size={20} />}
+                  {loading || uploading ? <Loader2 className="animate-spin" size={20} /> : <PlayCircle size={20} />}
                   开始 AI 智能评测
                 </button>
               </div>
@@ -923,39 +869,10 @@ const HighFidelityJudgeView = ({ item, onProcess, loading, config, stage, playAu
                 </div>
               </div>
               
-              {/* Playback Buttons */}
               <div className="mt-12 flex flex-col gap-3">
                 <button 
-                  onClick={() => {
-                    const fallbackText = config.voice_templates.commentary
-                      .replace("{team_name}", item.team_name)
-                      .replace("{case_name}", item.case_name)
-                      .replace("{content}", item.result?.voice_comment || "");
-                    playAudio(item.audio_comment, 'comment', fallbackText);
-                  }}
-                  disabled={playing !== null && playing !== 'comment'}
-                  className="w-full py-3 glass-card rounded-xl text-white font-bold hover:bg-white/10 transition-all flex items-center justify-center gap-2"
-                >
-                  {playing === 'comment' ? <Loader2 className="animate-spin" size={18} /> : <Volume2 size={18} />}
-                  {playing === 'comment' ? '停止播放' : '播放点评'}
-                </button>
-                {stage === 'final' && (
-                  <button 
-                    onClick={() => {
-                      const fallbackText = config.voice_templates.score
-                        .replace("{total_score}", item.result?.total_score || "0");
-                      playAudio(item.audio_score, 'score', fallbackText);
-                    }}
-                    disabled={playing !== null && playing !== 'score'}
-                    className="w-full py-3 glass-card rounded-xl text-white font-bold hover:bg-white/10 transition-all flex items-center justify-center gap-2"
-                  >
-                    {playing === 'score' ? <Loader2 className="animate-spin" size={18} /> : <Trophy size={18} />}
-                    {playing === 'score' ? '停止播放' : '播放报分'}
-                  </button>
-                )}
-                <button 
-                  onClick={() => onProcess(demoPerf, defensePerf)}
-                  disabled={loading}
+                  onClick={() => onProcess(contractText, deliverablesText)}
+                  disabled={loading || uploading}
                   className="w-full py-3 text-slate-400 text-sm hover:text-white transition-colors disabled:opacity-50"
                 >
                   重新评测

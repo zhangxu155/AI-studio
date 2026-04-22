@@ -3,6 +3,7 @@ import { createServer as createViteServer } from "vite";
 import fs from "fs/promises";
 import path from "path";
 import dotenv from "dotenv";
+import { spawn } from "child_process";
 
 dotenv.config();
 
@@ -36,6 +37,40 @@ async function readJson(filename: string) {
 
 async function writeJson(filename: string, data: any) {
   await fs.writeFile(path.join(DATA_DIR, filename), JSON.stringify(data, null, 2));
+}
+
+async function parseUploadedFile(filename: string, base64Data: string) {
+  const scriptPath = path.resolve("scripts/parse_file.py");
+  const stdout = await new Promise<string>((resolve, reject) => {
+    const child = spawn("python", [scriptPath, filename], { stdio: ["pipe", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+
+    child.stdout.on("data", (chunk) => {
+      out += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      err += chunk.toString();
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(err || `Parser exited with code ${code}`));
+        return;
+      }
+      resolve(out);
+    });
+
+    child.stdin.write(base64Data);
+    child.stdin.end();
+  });
+
+  const parsed = JSON.parse(stdout);
+  if (!parsed?.success) {
+    throw new Error(parsed?.error || "文件解析失败");
+  }
+
+  return parsed.text || "";
 }
 
 // --- API Routes ---
@@ -82,6 +117,42 @@ app.delete("/api/cases/:id", async (req, res) => {
   
   await writeJson("cases.json", cases);
   res.json({ success: true });
+});
+
+// 3. File Parsing
+app.post("/api/parse-deliverables", async (req, res) => {
+  const files = req.body?.files;
+  if (!Array.isArray(files) || files.length === 0) {
+    return res.status(400).json({ error: "No files uploaded" });
+  }
+
+  try {
+    const parsedFiles = await Promise.all(files.map(async (file: any) => ({
+      filename: file.filename,
+      text: await parseUploadedFile(file.filename, file.data)
+    })));
+
+    res.json({
+      files: parsedFiles,
+      mergedText: parsedFiles.map((f) => `【${f.filename}】\n${f.text}`).join("\n\n")
+    });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || "Failed to parse deliverables" });
+  }
+});
+
+app.post("/api/parse-performance-contract", async (req, res) => {
+  const file = req.body?.file;
+  if (!file?.filename || !file?.data) {
+    return res.status(400).json({ error: "No contract file uploaded" });
+  }
+
+  try {
+    const text = await parseUploadedFile(file.filename, file.data);
+    res.json({ filename: file.filename, text });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || "Failed to parse contract file" });
+  }
 });
 
 // 4. Save Process Result
